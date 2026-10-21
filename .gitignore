@@ -1,0 +1,14 @@
+# recordings and test signals (regenerate with the scripts)
+recordings/
+*.wav
+*.flac
+*.mka
+*.mkv
+*.npy
+# python
+__pycache__/
+*.pyc
+# private calibration and local config
+*-cal.txt
+*.cal
+.env
