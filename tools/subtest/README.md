@@ -28,3 +28,14 @@ limits. During the loud pass keep a hand on the sub: lightly on the top, then th
 note the tone number where the buzz appears and whether pressing a panel stops it (a panel/brace), a shake of the object on top
 (loose item), or no change (port chuffing, driver, or the room). For a recording, put the mic 30 cm from the cabinet instead of
 at the seat so the room matters less; the analyser's 'rise' column (non-tone energy growing faster than the tone) flags it.
+
+### Close-mic recordings: keep them below the clip rail
+
+The first hot run (23 Oct 2026, mic a few cm from the cabinet) clipped the recording chain: every tone from 31.5 to 71 Hz in the loud pass
+(and 35.5, 40 and 56 Hz in the quiet pass) was flat-topped at exactly the same level, -6.1 dBFS. Their distortion is the recording's, not the sub's.
+The analyser now marks such tones `CLIPPED` and gives no rattle verdict for them. Aim for the loudest tone peaking below about -12 dBFS
+(move the mic back 3x for -10 dB, or lower the recording level). The sync-chirp search is also normalised by local energy, because loud
+broadband buzz used to out-score the real chirps and break the placement.
+
+Trying EQ against a buzz: `./set-eq.py --rattle` (or `--rattle=0.5`) adds -3 dB cuts at 38 and 58 Hz and a 28 Hz high-pass on top of the standing profile.
+It is a trial, not a proven fix; repeat the hot run with the mic further back to see whether the faint 35-40 Hz and 55-66 Hz onset moves.

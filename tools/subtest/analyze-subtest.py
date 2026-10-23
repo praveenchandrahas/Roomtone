@@ -48,7 +48,11 @@ def block_corr(x, times):
     c = chirp(); span = int((times[-1] - times[0]) * FS) + len(c); tpl = np.zeros(span)
     for tt in times:
         i = int(round((tt - times[0]) * FS)); tpl[i:i + len(c)] += c
-    return np.abs(fftconvolve(x, tpl[::-1], mode="valid"))
+    r = np.abs(fftconvolve(x, tpl[::-1], mode="valid"))
+    # normalise by the signal energy under the template, so loud broadband buzz (a rattling cabinet, close-mic
+    # recordings) cannot out-score the real, faint chirps
+    en = fftconvolve(x ** 2, np.ones(span), mode="valid")
+    return r / np.sqrt(np.maximum(en, 1e-12))
 
 
 def refine(a, k):
@@ -217,6 +221,7 @@ def part2(x, a, b, C):
         def peak(fc):
             hw = max(0.03 * fc, 1.5); m = (f >= fc - hw) & (f <= fc + hw); return S[m].sum()
         fund = peak(f0)
+        pk_seg = float(np.max(np.abs(seg)))
         harm = [peak(k * f0) for k in range(2, 9) if k * f0 < 2000]
         mask = np.zeros(len(f), bool)
         for k in range(1, 11):
@@ -224,7 +229,7 @@ def part2(x, a, b, C):
         res_band = (f >= 20) & (f <= 2000) & ~mask
         resid = S[res_band].sum()
         rows[(cu["pass"], f0)] = dict(fund=10 * np.log10(fund + 1e-30), thd=10 * np.log10(sum(harm) / fund + 1e-30),
-                                      other=10 * np.log10(resid / fund + 1e-30), resid_abs=10 * np.log10(resid + 1e-30), level=cu["level"])
+                                      other=10 * np.log10(resid / fund + 1e-30), resid_abs=10 * np.log10(resid + 1e-30), level=cu["level"], pk=pk_seg)
     if not rows:
         line("  no tones in this recording"); return
     # the noise: silence between the end sync block and the end of the recording, or before the first block
@@ -234,6 +239,15 @@ def part2(x, a, b, C):
         seg = x[int(tn * FS):int((tn + 3.0) * FS)]; N = 1 << 19; S = np.abs(rfft(seg * np.hanning(len(seg)), N)) ** 2 * (N / len(seg)); f = np.fft.rfftfreq(N, 1 / FS)
         noise = 10 * np.log10(S[(f >= 20) & (f <= 2000)].sum() + 1e-30)
     freqs = sorted({k[1] for k in rows})
+    # clip guard: when several tones share one identical peak (within 0.5 %) the mic chain is hitting a rail and the distortion
+    # of those tones belongs to the recording, not to the sub. (Seen on 23 Oct 2026: mic a few cm from the cabinet, flat tops at -6.1 dBFS.)
+    gp = float(np.max(np.abs(x)))
+    railed = {k for k, v in rows.items() if v["pk"] >= 0.995 * gp}
+    clipped = railed if len(railed) >= 3 else set()
+    if clipped:
+        line(f"\n  !! RECORDING CLIPPED: {len(clipped)} tones peak at the same level ({20 * np.log10(gp):.1f} dBFS): the mic chain is overloaded (mic too close or its gain too high).")
+        line("     Their distortion and 'buzz' numbers are the recording's, not the sub's, and are marked CLIPPED below. Move the mic back (3x the distance = -10 dB)")
+        line("     or lower the recording level until the loudest tone peaks below about -12 dBFS, then repeat.")
     q = [k for k in rows if k[0] == 0]; lo, hi = (C["tones"][0]["level"], C["tones"][-1]["level"])
     line(f"  quiet pass {lo:g} dBFS, loud pass {hi:g} dBFS. 'other' = everything that is not the tone or its first 10 harmonics, 20 Hz-2 kHz,")
     line("  in dB below the tone: noise, buzz, rattle. 'thd' = harmonics 2-8 in dB below the tone.")
@@ -246,14 +260,16 @@ def part2(x, a, b, C):
         gain = B["fund"] - A["fund"]; rise = B["other"] - A["other"]
         flags = []
         above = (B["resid_abs"] - noise) if noise is not None else 99.0
-        if above < 6 and B["other"] < -40:
+        if (0, fq) in clipped or (1, fq) in clipped:
+            flags.append("CLIPPED: " + ("quiet+loud" if (0, fq) in clipped and (1, fq) in clipped else ("quiet" if (0, fq) in clipped else "loud")) + " pass, recording overloaded, ignore")
+        elif above < 6 and B["other"] < -40:
             flags.append("(near the noise: unclear)")
         else:
             if (rise > 8 and B["other"] > -40) or (B["other"] > -33 and above >= 10):
                 flags.append("<-- RATTLE/BUZZ likely"); sus.append(fq)
             elif (rise > 5 and B["other"] > -45) or (B["other"] > -38 and above >= 10):
                 flags.append("<-- suspicious"); sus.append(fq)
-        if gain < (hi - lo) - 3:
+        if gain < (hi - lo) - 3 and not ((0, fq) in clipped or (1, fq) in clipped):
             flags.append("compressing")
         flag = " ".join(flags)
         line(f"  {fq:6g}  {A['fund']:7.1f}  {B['fund']:7.1f}  {gain:5.1f} | {A['thd']:6.0f}  {B['thd']:6.0f} | {A['other']:7.0f}  {B['other']:7.0f}  {rise:+5.0f} | {flag}")
@@ -262,7 +278,10 @@ def part2(x, a, b, C):
         line(f"\n  Suspect tones: {', '.join(f'{f:g} Hz' for f in sus)}. Listen to those steps (tone number = position in the list 25, 28, 31.5, ...); a rattle that starts on one")
         line("  step and fades two steps later is a single resonance (loose object, panel, a port): find it by hand at that frequency.")
     else:
-        line("\n  No tone stands out: nothing rattles or buzzes out of proportion to the level in this test.")
+        if clipped:
+            line("\n  No verdict for the CLIPPED tones. Among the others nothing rattles or buzzes out of proportion to the level.")
+        else:
+            line("\n  No tone stands out: nothing rattles or buzzes out of proportion to the level in this test.")
 
 
 if __name__ == "__main__":
