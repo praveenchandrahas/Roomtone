@@ -59,9 +59,20 @@ mpv-atmos --pause --end=14 bedtest-5.1.flac      # then ./scripts/rec.sh bed-on 
 The per-speaker level difference between the two recordings should match the trims: SL -4.4, FR -1.9, FC -0.8, SR -0.7 dB.
 (With the router installed no manual routing step is needed.)
 
+## Sweep tests with CamillaDSP in the path (2026-10-23)
+
+REW sends its sweep straight to the sound card, so it cannot measure through CamillaDSP. `tools/sweeptest/` and
+`tools/subtest/` play log sweeps on the eight channels (and pairs) through `play-through-camilla.sh`, record on the mic, and
+deconvolve with sync chirps as the timing reference. `analyze-sweeptest.py` reports per-speaker arrival and tone, and the
+heights-versus-bed fit; `--heights-on` checks a recording made with the heights processing active. `analyze-subtest.py`
+reports the sub's range, compression and distortion, and a rattle hunt with stepped tones. Both tolerate a late-started or
+early-stopped recording (they place the file by the sync chirps). Each folder has a README with the commands.
+
 ## Things that bit us
 
 - REW sweeps were recorded with no timing reference on a separate capture device: do not read absolute arrival times from them.
 - Mic and output share no clock: always use a drift-removing fit.
 - A mic recording of a very loud scene is only a rough comparison (ceiling clipping).
 - The source of a hot trailer can itself exceed full scale (a few samples on FR/SR in one clip): that is the file, not the chain.
+- Repositioning the mic between runs changes single 1/6-octave bins by 3-7 dB (and the bed mean by 1-2 dB): compare band averages and reference channels, not single bins.
+- The `.mdat` files of REW 5 are Java serialisations; `javaobj-py3` reads them. A 45-58 dB "response" under 90 Hz in the height sweeps was noise, not output.
