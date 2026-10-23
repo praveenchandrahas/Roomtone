@@ -274,7 +274,7 @@ def main():
         res[i] = dict(ch=ch, h=h, pre=pre, t=t_arr, f=f, H=H)
     miss = [i for i in range(len(C["slots"])) if i not in res]
     single = {r["ch"][0]: r for r in res.values() if len(r["ch"]) == 1}
-    if len(single) < 8 or any(i not in res for i in range(len(C["slots"]))):
+    if len(single) < len({sl["ch"][0] for sl in C["slots"] if len(sl["ch"]) == 1}) or any(i not in res for i in range(len(C["slots"]))):
         line("WARNING: the recording does not hold every sweep slot; sections that need the missing ones are skipped. Record the whole file (about 150 s, started 8 s before the playback).")
     if 0 not in single:
         raise SystemExit("FL sweep (the timing reference) is not in this recording")
