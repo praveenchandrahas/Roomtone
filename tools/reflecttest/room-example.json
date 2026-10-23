@@ -1,0 +1,12 @@
+{
+ "_note": "EXAMPLE VALUES, replace with a tape-measure survey. Metres. Origin = the floor corner at the front-left of the room as seen from the seat. x = left to right (length of the front wall), y = front to back, z = up. mic = the mic capsule (ear position).",
+ "room": {"length": 3.05, "width": 3.05, "height": 2.4},
+ "mic": [1.5, 2.3, 0.61],
+ "speakers": {
+  "FL": [0.55, 0.25, 1.0],
+  "FC": [1.52, 0.25, 0.9],
+  "FR": [2.50, 0.25, 1.0],
+  "RL": [0.9, 1.9, 2.4],
+  "RR": [2.15, 1.9, 2.4]
+ }
+}

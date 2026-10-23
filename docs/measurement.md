@@ -68,6 +68,13 @@ heights-versus-bed fit; `--heights-on` checks a recording made with the heights 
 reports the sub's range, compression and distortion, and a rattle hunt with stepped tones. Both tolerate a late-started or
 early-stopped recording (they place the file by the sync chirps). Each folder has a README with the commands.
 
+## Dialogue and reflection tests (2026-10-23)
+
+`tools/dialoguetest/` (centre-speaker response, real versus phantom centre, C50, RT60, STI, background noise) and
+`tools/reflecttest/` (early-reflection energy-time curves from the existing sweep test, with a panels-on versus panels-off
+comparison and an image-source label per surface) are built and checked against simulated or existing recordings; see their
+READMEs. The reflection comparison's repeat-run noise is about +-3 dB per time slice.
+
 ## Things that bit us
 
 - REW sweeps were recorded with no timing reference on a separate capture device: do not read absolute arrival times from them.
