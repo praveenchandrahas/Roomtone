@@ -39,3 +39,21 @@ broadband buzz used to out-score the real chirps and break the placement.
 
 Trying EQ against a buzz: `./set-eq.py --rattle` (or `--rattle=0.5`) adds -3 dB cuts at 38 and 58 Hz and a 28 Hz high-pass on top of the standing profile.
 It is a trial, not a proven fix; repeat the hot run with the mic further back to see whether the faint 35-40 Hz and 55-66 Hz onset moves.
+
+### Second hot run: two recorders, a little louder (24 Oct 2026)
+
+    python3 make-subtest.py --quiet=-8 --loud=-3 --boost=2     # sweeps -28/-20/-12, tones -6 then -1 dBFS (+2 dB on everything)
+
+The loud tones now peak at -1 dBFS, the most `--boost` allows. Keep the same standing profile and the same master volume as the first
+hot run (no `--rattle`) so the two runs compare. Stop if the sub distorts audibly or the amplifier limits.
+
+- **iMM-6S** through the USB interface, about 1 m from the sub (not 3 cm): `./rec.sh gain`, then `./rec.sh hot2 330` and
+  `./rec.sh check recordings/hot2.wav` (peaks should be below -12 dBFS; if not, move it back or lower the level and repeat).
+- **iPhone** on a different side of the sub, 1-2 m away, not on the cabinet. Voice Memos, audio quality set to Lossless (or any recorder
+  that writes WAV/ALAC). A phone is poor below about 40 Hz, so read it for the buzz (harmonics and non-harmonic noise), not for the 25-35 Hz
+  fundamentals. Convert and check: `./phone-to-wav.sh Recording.m4a recordings/hot2-phone.wav`.
+- Start both recorders about 8 s before playback and record at least 330 s. Analyse each separately:
+  `python3 -I analyze-subtest.py recordings/hot2.wav` and `python3 -I analyze-subtest.py recordings/hot2-phone.wav`.
+  A rattle that is really in the cabinet shows in the 'other' and 'rise' columns of both recordings at the same tones; one that appears
+  in only one is a mic, room or phone artefact. The sync-chirp placement works on lossy phone audio (self-tested through AAC at 44.1 kHz).
+- A flat, linear test recording makes every loud tone peak at the same level and trips the clip guard; a real recording does not.
