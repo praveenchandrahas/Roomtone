@@ -2,7 +2,7 @@
 
 ## Equipment and layout
 
-- **Microphone:** Dayton iMM-6S with its calibration file (not in this repo: load your own in REW and in analysis).
+- **Microphone:** Dayton iMM-6S with its calibration file (its calibration file is in `data/mic/` for that one microphone only; load your own in REW and in analysis).
   Placed at the listening seat, ear height, opposite the centre speaker.
 - **Capture device:** a SPACETOUCH USB audio adapter (ALSA card 1), separate from the playback interface. Two devices
   means two clocks: all timing methods here remove the drift.
