@@ -61,6 +61,17 @@ def refine(a, k):
     return float(k)
 
 
+def sweep_offset(x, C):
+    """Matched filter on the loudest sweep: returns (file time - cue time) in seconds, or None if it is not clear.
+    Used when the sync chirps cannot place the recording on their own (a run on 2026-10-24 found only a doubled end block)."""
+    sw = max(C["sweeps"], key=lambda q: q["level"])
+    r = np.abs(fftconvolve(x, sweep_sig(sw)[::-1], mode="valid"))
+    k = int(np.argmax(r))
+    if r[k] / (np.median(r) + 1e-12) < 50:
+        return None
+    return k / FS - sw["t"]
+
+
 def placement(x, C):
     s, e = C["sync"][:3], C["sync"][3:]
     r = block_corr(x, s); k1 = int(np.argmax(r))
@@ -79,6 +90,9 @@ def placement(x, C):
     elif ka is not None:
         A, B = refine(r, ka) / FS, refine(r, k1) / FS
     else:
+        sw_off = sweep_offset(x, C)
+        if sw_off is not None:
+            return sw_off, 1.0, "the loudest sweep itself (only one sync block was found; the 3-chirp blocks were too faint or doubled)"
         t = k1 / FS
         def rms(t0, t1):
             seg = x[int(max(0, t0) * FS):int(max(0, t1) * FS)]; return np.sqrt(np.mean(seg ** 2)) if len(seg) else 0.0
