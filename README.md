@@ -16,7 +16,7 @@ Everything here was written for one room and one seat; the kits are general enou
 | `tools/miccal.py` | removes the measurement microphone's response from every recording the analysers read (see below) |
 | `data/` | small REW exports and the microphone calibration file (`data/README.md`); large recordings are not committed |
 
-The figure-drawing scripts that turn these results into the project's graphs are in the [sdht](https://github.com/praveenchandrahas/sdht) repository (`tools/make-*.py`), because they also use the router's filter
+The figure-drawing scripts that turn these results into the project's graphs are in the [sdht](https://github.com/praveenchandrahas/Software-Defined-Home-Theatre) repository (`tools/make-*.py`), because they also use the router's filter
 definitions. The measurement protocol is `docs/measurement.md`; the results, their uncertainty and the build log are in sdht.
 
 ## Microphone calibration
@@ -38,4 +38,4 @@ Note: the analysers were written with an AI assistant and checked against simula
 
 [Apache License 2.0](LICENSE) (see also [NOTICE](NOTICE)). Dolby, Dolby Atmos, DTS and DTS:X are trademarks of their owners; this project is not affiliated with or endorsed by them. It contains no media files and no decoder code.
 
-Part of the [software-defined home theatre](https://github.com/praveenchandrahas/sdht) project.
+Part of the [software-defined home theatre](https://github.com/praveenchandrahas/Software-Defined-Home-Theatre) project.
