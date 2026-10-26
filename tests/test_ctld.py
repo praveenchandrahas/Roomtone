@@ -156,7 +156,7 @@ else:
 
 # websocket client against a fake CamillaDSP
 REPLIES = {"GetState": "Running", "GetCaptureRate": 48000, "GetBufferLevel": 1024, "GetClippedSamples": 0, "GetProcessingLoad": 7.5,
-           "GetCaptureSignalPeak": [-20.1, -30.0], "GetPlaybackSignalPeak": [-18.0, -25.5]}
+           "GetCaptureSignalPeak": [-20.1, -30.0], "GetPlaybackSignalPeak": [-18.0, -25.5], "GetPlaybackSignalRms": [-30.0, -40.5]}
 asked = []
 
 
@@ -193,6 +193,23 @@ try:
 except ValueError:
     refused = True
 check("websocket: a write command is refused in code before anything is sent", refused)
+ls2 = socket.socket(); ls2.bind(("127.0.0.1", 0)); ls2.listen(1); C.WS_PORT = ls2.getsockname()[1]
+REPLIES["GetPlaybackSignalPeak"] = [-6.0, -7.0, -20.0, -21.0, -8.0, -12.0, -30.0, -31.0]; REPLIES["GetPlaybackSignalRms"] = [-18.0, -19.0, -32.0, -33.0, -20.0, -22.0, -45.0, -46.0]
+threading.Thread(target=fake_ws, args=(ls2,), daemon=True).start()
+sess = C.WsSession()
+lf = C.level_frame(sess); sess.close()
+check("levels: one frame has peak and rms for the 8 channels in the layout order", lf["ok"] and len(lf["peak"]) == 8 and lf["rms"][5] == -22.0 and C.LAYOUT[5] == "LFE" and C.LAYOUT[2] == "TFL", str(lf))
+ls3 = socket.socket(); ls3.bind(("127.0.0.1", 0)); ls3.listen(1); C.WS_PORT = ls3.getsockname()[1]
+threading.Thread(target=fake_ws, args=(ls3,), daemon=True).start()
+c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+c.putrequest("GET", "/v1/levels", skip_host=True); c.putheader("Host", f"127.0.0.1:{PORT}"); c.endheaders()
+r = c.getresponse(); first = json.loads(r.fp.readline().decode()[6:]); r.fp.readline(); second = json.loads(r.fp.readline().decode()[6:])
+check("levels stream: first event gives the layout, then level frames", first["layout"] == list(C.LAYOUT) and second.get("ok") and len(second["rms"]) == 8, str((first, second)))
+c.close()
+c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
+c.putrequest("GET", "/v1/levels", skip_host=True); c.putheader("Host", "evil.example:80"); c.endheaders()
+check("levels stream is behind the same Host check as the rest", c.getresponse().status == 421)
+c.close()
 C.WS_PORT = 1
 check("websocket: unreachable gives ok false with the unit hint, never an exception", C.live_block()["ok"] is False)
 

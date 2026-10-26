@@ -31,7 +31,11 @@ FLAVOURS = {"stereo": ("voice", "balanced", "wide"), "bed": ("subtle", "balanced
 PMODES = ("auto", "film", "stereo", "bed")
 # CamillaDSP websocket: read-only commands only, enforced here
 WS_READ_ONLY = ("GetState", "GetCaptureRate", "GetBufferLevel", "GetClippedSamples", "GetProcessingLoad",
-                "GetCaptureSignalPeak", "GetPlaybackSignalPeak", "GetVersion")
+                "GetCaptureSignalPeak", "GetPlaybackSignalPeak", "GetPlaybackSignalRms", "GetVersion")
+# hardware order of CamillaDSP's 8 playback channels (linux-theater-dsp set-eq.py: FL FR RL RR FC LFE SL SR; RL and RR are the two ceiling speakers)
+LAYOUT = ("FL", "FR", "TFL", "TFR", "FC", "LFE", "SL", "SR")
+LEVEL_HZ = 20
+LEVEL_STREAMS = threading.BoundedSemaphore(4)
 
 
 # ------------------------------------------------------------------ a minimal websocket client (RFC 6455, text frames only)
@@ -72,29 +76,35 @@ def ws_send_text(s, text):
     s.sendall(head + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(data)))
 
 
-def ws_query(commands, host=None, port=None, timeout=1.0):
-    """Ask CamillaDSP's websocket a list of read-only commands. Returns {command: value or None}; raises OSError if it cannot be reached."""
-    bad = [c for c in commands if c not in WS_READ_ONLY]
-    if bad:
-        raise ValueError("not a read-only command: " + ", ".join(bad))
-    s = socket.create_connection((host or WS_HOST, port or WS_PORT), timeout=timeout)
-    try:
-        s.settimeout(timeout)
-        key = base64.b64encode(os.urandom(16)).decode()
-        s.sendall((f"GET / HTTP/1.1\r\nHost: {host or WS_HOST}:{port or WS_PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-                   f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
-        resp = b""
-        while b"\r\n\r\n" not in resp:
-            resp += _recv_exact(s, 1)
-            if len(resp) > 8192:
-                raise OSError("bad handshake")
-        if b" 101 " not in resp.split(b"\r\n", 1)[0]:
-            raise OSError("websocket handshake refused")
+class WsSession:
+    """One websocket connection to CamillaDSP (read-only commands only, enforced here). Raises OSError when it cannot be reached."""
+    def __init__(self, host=None, port=None, timeout=1.0):
+        host, port = host or WS_HOST, port or WS_PORT
+        self.s = socket.create_connection((host, port), timeout=timeout)
+        try:
+            self.s.settimeout(timeout)
+            key = base64.b64encode(os.urandom(16)).decode()
+            self.s.sendall((f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                resp += _recv_exact(self.s, 1)
+                if len(resp) > 8192:
+                    raise OSError("bad handshake")
+            if b" 101 " not in resp.split(b"\r\n", 1)[0]:
+                raise OSError("websocket handshake refused")
+        except BaseException:
+            self.s.close(); raise
+
+    def query(self, commands):
+        bad = [c for c in commands if c not in WS_READ_ONLY]
+        if bad:
+            raise ValueError("not a read-only command: " + ", ".join(bad))
         out = {}
         for c in commands:
-            ws_send_text(s, json.dumps(c))
+            ws_send_text(self.s, json.dumps(c))
             while True:
-                op, data = ws_read_frame(s)
+                op, data = ws_read_frame(self.s)
                 if op == 0x1:
                     break
                 if op == 0x8:
@@ -106,8 +116,32 @@ def ws_query(commands, host=None, port=None, timeout=1.0):
             except (ValueError, AttributeError):
                 out[c] = None
         return out
+
+    def close(self):
+        try:
+            self.s.close()
+        except OSError:
+            pass
+
+
+def ws_query(commands, host=None, port=None, timeout=1.0):
+    """Ask CamillaDSP's websocket a list of read-only commands. Returns {command: value or None}; raises OSError if it cannot be reached."""
+    bad = [c for c in commands if c not in WS_READ_ONLY]
+    if bad:
+        raise ValueError("not a read-only command: " + ", ".join(bad))
+    sess = WsSession(host, port, timeout)
+    try:
+        return sess.query(commands)
     finally:
-        s.close()
+        sess.close()
+
+
+def level_frame(sess):
+    """One sample of the 8 playback channels (after EQ, what drives the amplifier inputs), in dBFS, in LAYOUT order. None where unavailable."""
+    v = sess.query(["GetPlaybackSignalPeak", "GetPlaybackSignalRms"])
+    def clean(a):
+        return [round(float(x), 1) for x in a] if isinstance(a, list) and len(a) == len(LAYOUT) and all(isinstance(x, (int, float)) for x in a) else None
+    return {"ok": True, "t": round(time.time(), 3), "peak": clean(v["GetPlaybackSignalPeak"]), "rms": clean(v["GetPlaybackSignalRms"])}
 
 
 def live_block():
@@ -292,6 +326,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, html.replace(b"__TOKEN__", TOKEN.encode()), "text/html")
         if path == "/v1/status":
             return self._send(200, SNAP.get())
+        if path == "/v1/levels":
+            return self._levels()
         if path == "/v1/events":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -310,6 +346,43 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError):
                 return
         self._send(404, {"error": "not found"})
+
+    def _levels(self):
+        """Server-sent stream of per-channel playback levels, LEVEL_HZ per second, from one persistent read-only websocket to CamillaDSP."""
+        if not LEVEL_STREAMS.acquire(blocking=False):
+            return self._send(429, {"error": "too many level streams"})
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(("data: " + json.dumps({"layout": LAYOUT, "hz": LEVEL_HZ}) + "\n\n").encode()); self.wfile.flush()
+            sess, step = None, 1.0 / LEVEL_HZ
+            try:
+                while True:
+                    t0 = time.time()
+                    try:
+                        if sess is None:
+                            sess = WsSession()
+                        msg = level_frame(sess)
+                    except (OSError, ValueError) as e:
+                        if sess:
+                            sess.close()
+                        sess = None
+                        msg = {"ok": False, "reason": f"CamillaDSP websocket not reachable ({e.__class__.__name__})"}
+                        step = 2.0
+                    else:
+                        step = 1.0 / LEVEL_HZ
+                    self.wfile.write(("data: " + json.dumps(msg) + "\n\n").encode()); self.wfile.flush()
+                    time.sleep(max(0.005, step - (time.time() - t0)))
+            except (OSError, ValueError):
+                return
+            finally:
+                if sess:
+                    sess.close()
+        finally:
+            LEVEL_STREAMS.release()
 
     def do_POST(self):
         if not self._gate():

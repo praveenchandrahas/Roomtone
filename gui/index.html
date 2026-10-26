@@ -4,65 +4,157 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theater-token" content="__TOKEN__">
+<meta name="color-scheme" content="dark light">
 <title>Theatre control</title>
 <style>
 :root {
-  --bg: #0e141b; --panel: #151d27; --line: #243142; --text: #e6edf3; --muted: #8b9bb0;
-  --accent: #38bdf8; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+  --bg: #07090d; --bg-glow: rgba(255, 176, 84, .07); --panel: rgba(255, 255, 255, .035); --panel-solid: #11151c; --line: rgba(255, 255, 255, .08);
+  --line-strong: rgba(255, 255, 255, .16); --text: #e9eef5; --muted: #7e8aa0; --faint: #4d576a;
+  --accent: #ffb054; --accent-ink: #1a1004;
+  --ok: #4ade80; --warn: #fbbf24; --bad: #fb7185;
+  --bed-rgb: 255, 176, 84; --height-rgb: 90, 209, 255; --lfe-rgb: 255, 107, 138;
+  --shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 18px 40px -24px rgba(0,0,0,.8);
 }
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) { --bg: #f4f6f9; --panel: #ffffff; --line: #d5dce6; --text: #16202c; --muted: #5a6b80; --accent: #0369a1; --ok: #15803d; --warn: #a16207; --bad: #b91c1c; }
+  :root:not([data-theme="dark"]) {
+    --bg: #f2f0eb; --bg-glow: rgba(217, 119, 6, .08); --panel: rgba(255, 255, 255, .72); --panel-solid: #ffffff; --line: rgba(20, 24, 32, .1);
+    --line-strong: rgba(20, 24, 32, .22); --text: #161b24; --muted: #5b6577; --faint: #98a1b1;
+    --accent: #c2670a; --accent-ink: #ffffff; --ok: #15803d; --warn: #a16207; --bad: #be123c;
+    --bed-rgb: 217, 119, 6; --height-rgb: 2, 132, 199; --lfe-rgb: 219, 39, 119;
+    --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(30,30,50,.35);
+  }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
-main { max-width: 960px; margin: 0 auto; padding: 16px; }
-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-h1 { font-size: 20px; margin: 0; flex: 1; }
-.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); }
-.dot.on { background: var(--ok); }
-.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
-.card h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
-dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; }
+html { background: var(--bg); }
+body {
+  margin: 0; color: var(--text); min-height: 100vh;
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  background: radial-gradient(1100px 520px at 50% -140px, var(--bg-glow), transparent 70%), var(--bg);
+  font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased;
+}
+main { max-width: 1180px; margin: 0 auto; padding: 22px 20px 36px; }
+
+/* header */
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+.brand { display: flex; align-items: baseline; gap: 10px; flex: 1; min-width: 200px; }
+.brand h1 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: .28em; text-transform: uppercase; }
+.brand h1 span { color: var(--accent); }
+.brand small { color: var(--muted); font-size: 12px; }
+.pills { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border-radius: 999px; font-size: 12px; color: var(--muted);
+  border: 1px solid var(--line); background: var(--panel); white-space: nowrap; }
+.pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.pill.ok { color: var(--text); } .pill.ok i { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.pill.warn { color: var(--text); } .pill.warn i { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.pill.bad { color: var(--text); } .pill.bad i { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+#age { color: var(--faint); font-size: 12px; min-width: 66px; text-align: right; }
+
+/* layout */
+.layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 960px) { .layout { grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); } .span2 { grid-column: 1 / -1; } }
+.cols3 { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px; box-shadow: var(--shadow); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); min-width: 0; }
+.card h2 { font-size: 11px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }
+.card h2 .tag { margin-left: auto; letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--faint); font-size: 12px; }
+dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; }
 dt { color: var(--muted); } dd { margin: 0; word-break: break-word; }
-.big { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
-.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; }
-.badge.ok { color: var(--ok); border-color: var(--ok); } .badge.warn { color: var(--warn); border-color: var(--warn); } .badge.bad { color: var(--bad); border-color: var(--bad); }
-.seg { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
-.seg button { background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; font: inherit; cursor: pointer; min-height: 40px; }
-.seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #04121c; font-weight: 600; }
+.big { font-size: 22px; font-weight: 600; letter-spacing: -.01em; line-height: 1.25; margin-bottom: 10px; }
+.badge { display: inline-block; padding: 1px 9px; border-radius: 999px; border: 1px solid var(--line-strong); font-size: 12px; }
+.badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+.badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.badge.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 55%, transparent); }
+.small { color: var(--faint); font-size: 12px; }
+
+/* the stage: room plan + meters */
+.stage { padding: 14px 14px 16px; }
+.stage .head { padding: 4px 6px 0; }
+#room { display: block; width: 100%; aspect-ratio: 16 / 10; min-height: 280px; max-height: 560px; }
+@media (max-width: 600px) { #room { aspect-ratio: 4 / 4.2; } }
+.meters { display: flex; gap: 6px; justify-content: center; align-items: flex-end; padding: 6px 4px 0; border-top: 1px solid var(--line); margin-top: 6px; }
+.grp { display: flex; gap: 6px; padding: 12px 8px 0; position: relative; flex: 1; justify-content: center; }
+.grp + .grp { border-left: 1px solid var(--line); }
+.grp.g-height { flex: .55; } .grp.g-lfe { flex: .3; }
+.grp > em { position: absolute; top: -2px; left: 50%; transform: translateX(-50%); font-style: normal; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); background: var(--bg); padding: 0 6px; display: none; }
+.ch { --rgb: var(--bed-rgb); display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; max-width: 64px; min-width: 0; }
+.ch.height { --rgb: var(--height-rgb); } .ch.lfe { --rgb: var(--lfe-rgb); }
+.bar { position: relative; width: 100%; max-width: 22px; height: 112px; border-radius: 5px; background: rgba(127,127,140,.12); overflow: hidden; }
+.bar .fill { position: absolute; inset: 0; transform-origin: 50% 100%; transform: scaleY(0); background: linear-gradient(to top, rgba(var(--rgb), .35), rgba(var(--rgb), 1)); will-change: transform; }
+.bar .peak { position: absolute; left: 0; right: 0; height: 2px; bottom: 0; background: rgb(var(--rgb)); box-shadow: 0 0 6px rgba(var(--rgb), .8); will-change: transform; }
+.bar::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(to top, transparent 0 4px, var(--panel-solid) 4px 5px); opacity: .9; pointer-events: none; }
+.ch.clip .fill { background: linear-gradient(to top, rgba(var(--rgb), .5), var(--bad)); } .ch.clip .peak { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+.ch .nm { font-size: 11px; font-weight: 600; letter-spacing: .08em; color: var(--muted); }
+.ch .val { font-size: 11px; color: var(--faint); min-height: 1.3em; }
+.chip { display: none; margin: 8px 6px 0; font-size: 12px; color: var(--warn); }
+.chip.show { display: block; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.stat { border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; background: rgba(127,127,140,.05); }
+.stat b { display: block; font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
+.stat span { font-size: 11px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+
+/* controls */
+label.lbl { display: block; color: var(--muted); font-size: 12px; margin: 14px 0 6px; }
+label.lbl:first-of-type { margin-top: 2px; }
+.seg { display: flex; flex-wrap: wrap; gap: 4px; padding: 3px; border-radius: 12px; background: rgba(127,127,140,.1); border: 1px solid var(--line); width: fit-content; max-width: 100%; }
+.seg button { background: transparent; color: var(--muted); border: 0; border-radius: 9px; padding: 7px 14px; font: inherit; cursor: pointer; min-height: 34px; transition: background .15s, color .15s, box-shadow .15s; text-transform: capitalize; }
+.seg button:hover { color: var(--text); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; box-shadow: 0 4px 14px -4px rgba(var(--bed-rgb), .6); }
 .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-label.lbl { display: block; color: var(--muted); font-size: 13px; }
-.meter { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; margin: 2px 0 8px; }
-.meter > i { display: block; height: 100%; background: var(--ok); width: 0; }
-#msg { min-height: 1.4em; color: var(--muted); margin-top: 8px; }
-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; max-width: 360px; }
-dialog::backdrop { background: rgba(0,0,0,.5); }
-dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; margin: 12px 0 0; }
-dialog button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
-dialog button.go { background: var(--accent); border-color: var(--accent); color: #04121c; font-weight: 600; }
-.small { color: var(--muted); font-size: 13px; }
+#msg { min-height: 1.4em; color: var(--muted); margin-top: 14px; font-size: 13px; }
+.meter { height: 6px; background: rgba(127,127,140,.18); border-radius: 3px; overflow: hidden; margin: 2px 0 10px; }
+.meter > i { display: block; height: 100%; background: linear-gradient(90deg, var(--ok), var(--warn) 80%, var(--bad)); width: 0; transition: width .12s linear; }
+label.lbl.tight { margin: 8px 0 2px; }
+
+dialog { background: var(--panel-solid); color: var(--text); border: 1px solid var(--line-strong); border-radius: 16px; max-width: 380px; padding: 20px; box-shadow: 0 30px 80px -20px rgba(0,0,0,.7); }
+dialog::backdrop { background: rgba(0,0,0,.55); backdrop-filter: blur(3px); }
+dialog p { margin: 0; }
+dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; margin: 18px 0 0; }
+dialog button { font: inherit; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--line-strong); background: transparent; color: var(--text); cursor: pointer; }
+dialog button.go { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+footer { margin-top: 18px; text-align: center; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 </style>
 </head>
 <body>
 <main>
-  <header><span id="dot" class="dot" title="connection"></span><h1>Theatre control</h1><span id="age" class="small"></span></header>
-  <div class="grid">
-    <section class="card" aria-labelledby="h-now"><h2 id="h-now">Now playing</h2>
-      <div class="big" id="now">…</div><dl id="nowdl"></dl></section>
-    <section class="card" aria-labelledby="h-prof"><h2 id="h-prof">Profile and engine</h2><dl id="profdl"></dl></section>
-    <section class="card" aria-labelledby="h-dsp"><h2 id="h-dsp">CamillaDSP live</h2><dl id="dspdl"></dl>
-      <label class="lbl">Capture peak (worst channel)</label><div class="meter"><i id="mcap"></i></div>
-      <label class="lbl">Playback peak (worst channel)</label><div class="meter"><i id="mplay"></i></div></section>
-    <section class="card" aria-labelledby="h-ctl"><h2 id="h-ctl">Controls</h2>
-      <label class="lbl">EQ</label><div class="seg" data-act="eq" role="group" aria-label="EQ"></div>
-      <label class="lbl">Profile mode</label><div class="seg" data-act="mode" role="group" aria-label="Profile mode"></div>
-      <label class="lbl">Stereo upmix flavour</label><div class="seg" data-act="flavour" data-kind="stereo" role="group" aria-label="Stereo flavour"></div>
-      <label class="lbl">5.1 upmix flavour</label><div class="seg" data-act="flavour" data-kind="bed" role="group" aria-label="Bed flavour"></div>
-      <label class="lbl">Adaptive engine</label><div class="seg" data-act="engine" role="group" aria-label="Adaptive engine"></div>
-      <div id="msg" role="status" aria-live="polite"></div></section>
+  <header>
+    <div class="brand"><h1>Theatre <span>control</span></h1><small>5.1.2 · Z906</small></div>
+    <div class="pills" id="pills" aria-label="Status"></div>
+    <span id="age"></span>
+  </header>
+
+  <div class="layout">
+    <section class="card stage" aria-labelledby="h-room">
+      <div class="head"><h2 id="h-room">Sound field <span class="tag" id="room-tag">live, after EQ</span></h2></div>
+      <canvas id="room" aria-hidden="true"></canvas>
+      <div class="chip" id="lvlchip" role="status"></div>
+      <div class="meters" id="meters" role="group" aria-label="Output level per speaker"></div>
+      <div class="stats" aria-label="Sound field summary">
+        <div class="stat"><b id="st-loud">–</b><span>Loudest</span></div>
+        <div class="stat"><b id="st-height">–</b><span>Height share</span></div>
+        <div class="stat"><b id="st-lfe">–</b><span>Sub level</span></div>
+      </div>
+    </section>
+
+    <div style="display:grid;gap:16px;align-content:start;min-width:0">
+      <section class="card" aria-labelledby="h-now"><h2 id="h-now">Now playing</h2>
+        <div class="big" id="now">…</div><dl id="nowdl"></dl></section>
+      <section class="card" aria-labelledby="h-ctl"><h2 id="h-ctl">Controls</h2>
+        <label class="lbl">EQ</label><div class="seg" data-act="eq" role="group" aria-label="EQ"></div>
+        <label class="lbl">Profile mode</label><div class="seg" data-act="mode" role="group" aria-label="Profile mode"></div>
+        <label class="lbl">Stereo upmix flavour</label><div class="seg" data-act="flavour" data-kind="stereo" role="group" aria-label="Stereo flavour"></div>
+        <label class="lbl">5.1 upmix flavour</label><div class="seg" data-act="flavour" data-kind="bed" role="group" aria-label="Bed flavour"></div>
+        <label class="lbl">Adaptive engine</label><div class="seg" data-act="engine" role="group" aria-label="Adaptive engine"></div>
+        <div id="msg" role="status" aria-live="polite"></div></section>
+    </div>
+
+    <div class="span2 cols3">
+      <section class="card" aria-labelledby="h-prof"><h2 id="h-prof">Profile and engine</h2><dl id="profdl"></dl></section>
+      <section class="card" aria-labelledby="h-dsp"><h2 id="h-dsp">CamillaDSP</h2><dl id="dspdl"></dl>
+        <label class="lbl tight">Capture peak (worst channel)</label><div class="meter"><i id="mcap"></i></div>
+        <label class="lbl tight">Playback peak (worst channel)</label><div class="meter"><i id="mplay"></i></div></section>
+    </div>
   </div>
-  <p class="small">Local only (127.0.0.1). Applying room corrections stays in autocal. Some changes cause about a second of silence and ask first.</p>
+  <footer class="small">Local only (127.0.0.1). Levels are the signal sent to each amplifier input, after EQ, not sound pressure in the room and not object positions. Room corrections are applied in autocal. Some changes cause about a second of silence and ask first.</footer>
 </main>
 <dialog id="dlg"><form method="dialog"><p id="dlgtext"></p><menu><button value="cancel">Cancel</button><button value="ok" class="go">Continue</button></menu></form></dialog>
 <script>
@@ -81,9 +173,10 @@ const fmt = (v, u) => (v === null || v === undefined) ? "n/a" : (typeof v === "n
 const worst = a => Array.isArray(a) && a.length ? Math.max(...a) : null;
 const meter = (id, db) => { document.getElementById(id).style.width = db === null ? "0%" : Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%"; };
 
+function pill(text, cls) { const p = el("span", undefined, "pill " + (cls || "")); p.append(el("i"), document.createTextNode(text)); return p; }
+
 function render(s) {
   last = s;
-  document.getElementById("dot").classList.toggle("on", !s.error);
   const eq = s.eq || {}, dsp = s.dsp || {}, m = s.mpv || {}, en = dsp.engine || {};
   const apps = (s.apps || []).filter(a => a.patched || a.total);
   if (s.pipewire === false) { document.getElementById("now").textContent = "PipeWire not reachable"; }
@@ -108,15 +201,21 @@ function render(s) {
     ["Engine", en.state ? `${en.state}, service ${en.service}, ports ${en.ports_up ? "up" : "down"}${en.linked ? ", linked" : ""}` : "n/a", en.state === "failed" ? "bad" : null]
   ].filter(r => r[1] !== undefined));
   const L = s.live || {};
+  const uw = s.underruns_60s === null || s.underruns_60s === undefined ? "n/a (idle)" : fmt(s.underruns_60s);
   if (L.ok) {
     rows(document.getElementById("dspdl"), [["State", fmt(L.state)], ["Sample rate", fmt(L.capture_rate, " Hz")], ["Load", fmt(L.load_percent, " %")],
       ["Buffer", fmt(L.buffer_level, " frames")], ["Clipped", fmt(L.clipped_samples), L.clipped_samples ? "bad" : null],
-      ["Buffer-empty warnings (60 s)", s.underruns_60s === null || s.underruns_60s === undefined ? "n/a (idle)" : fmt(s.underruns_60s), s.underruns_60s ? "warn" : null]]);
+      ["Buffer-empty warnings (60 s)", uw, s.underruns_60s ? "warn" : null]]);
     meter("mcap", worst(L.capture_peak_db)); meter("mplay", worst(L.playback_peak_db));
   } else {
-    rows(document.getElementById("dspdl"), [["Live data", L.reason || "not available"], ["Buffer-empty warnings (60 s)", s.underruns_60s === null || s.underruns_60s === undefined ? "n/a (idle)" : fmt(s.underruns_60s), s.underruns_60s ? "warn" : null]]);
+    rows(document.getElementById("dspdl"), [["Live data", L.reason || "not available"], ["Buffer-empty warnings (60 s)", uw, s.underruns_60s ? "warn" : null]]);
     meter("mcap", null); meter("mplay", null);
   }
+  const pills = document.getElementById("pills"); pills.replaceChildren();
+  pills.append(pill(s.error ? "No status" : "Connected", s.error ? "bad" : "ok"));
+  if (vb) pills.append(pill(vb[0].replace(" (EQ active)", ""), vb[1]));
+  if (eq.switch) pills.append(pill("EQ " + eq.switch, eq.switch === "off" ? "warn" : "ok"));
+  if (dsp.profile) pills.append(pill(dsp.profile + (pinned ? " · pinned" : "")));
   const cur = { eq: eq.switch, mode: dsp.pmode, engine: en.state, stereo: (dsp.flavours || {}).stereo, bed: (dsp.flavours || {}).bed };
   for (const box of document.querySelectorAll(".seg")) {
     const act = box.dataset.act, kind = box.dataset.kind, key = kind || act;
@@ -143,9 +242,188 @@ async function doAction(action, value, kind) {
   msg.textContent = j.ok ? (j.noop ? "Already set." : "Done.") : ("Failed: " + (j.error || j.output || code));
   refresh();
 }
-async function refresh() { try { render(await (await fetch("/v1/status")).json()); } catch (e) { document.getElementById("dot").classList.remove("on"); } }
+async function refresh() { try { render(await (await fetch("/v1/status")).json()); } catch (e) { const p = document.getElementById("pills"); p.replaceChildren(pill("Disconnected", "bad")); } }
 refresh();
-try { const es = new EventSource("/v1/events"); es.onmessage = e => render(JSON.parse(e.data)); es.onerror = () => { document.getElementById("dot").classList.remove("on"); }; } catch (e) { setInterval(refresh, 2000); }
+try { const es = new EventSource("/v1/events"); es.onmessage = e => render(JSON.parse(e.data)); es.onerror = () => { document.getElementById("pills").replaceChildren(pill("Disconnected", "bad")); }; } catch (e) { setInterval(refresh, 2000); }
+
+/* ------------------------------------------------------------------ live sound field */
+const FLOOR = -54;                                    // dBFS shown as empty
+const SPK = {                                         // plan view, normalised to the drawing: x left→right, y screen→back wall
+  FL: { x: .20, y: .22, kind: "bed" }, FC: { x: .50, y: .15, kind: "bed" }, FR: { x: .80, y: .22, kind: "bed" },
+  SL: { x: .07, y: .64, kind: "bed" }, SR: { x: .93, y: .64, kind: "bed" },
+  TFL: { x: .33, y: .45, kind: "height" }, TFR: { x: .67, y: .45, kind: "height" },
+  LFE: { x: .075, y: .30, kind: "lfe" }
+};
+const GROUPS = [["g-bed", "", ["FL", "FC", "FR", "SL", "SR"]], ["g-height", "", ["TFL", "TFR"]], ["g-lfe", "", ["LFE"]]];
+const LISTENER = { x: .5, y: .72 };
+const NAMES = Object.keys(SPK);
+const lv = {};                                        // per channel: target and displayed levels
+for (const n of NAMES) lv[n] = { tr: -120, tp: -120, db: -120, hold: -120, holdT: 0 };
+let layout = ["FL", "FR", "TFL", "TFR", "FC", "LFE", "SL", "SR"], lastMsg = 0, chipText = "";
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const norm = db => Math.max(0, Math.min(1, (db - FLOOR) / -FLOOR));
+const dbText = db => db <= -90 ? "−∞" : (db < 0 ? "−" : "") + Math.abs(db).toFixed(0);
+
+const meters = document.getElementById("meters"), mel = {};
+for (const [cls, , names] of GROUPS) {
+  const g = el("div", undefined, "grp " + cls);
+  for (const n of names) {
+    const c = el("div", undefined, "ch " + SPK[n].kind), bar = el("div", undefined, "bar"), fill = el("i", undefined, "fill"), pk = el("b", undefined, "peak");
+    bar.setAttribute("role", "meter"); bar.setAttribute("aria-label", n + " level, dBFS"); bar.setAttribute("aria-valuemin", FLOOR); bar.setAttribute("aria-valuemax", 0); bar.setAttribute("aria-valuenow", FLOOR);
+    bar.append(fill, pk); const nm = el("span", n, "nm"), val = el("span", "−∞", "val");
+    c.append(bar, nm, val); g.append(c); mel[n] = { c, fill, pk, val, bar };
+  }
+  meters.append(g);
+}
+
+function onLevels(d) {
+  if (d.layout) { layout = d.layout; return; }
+  const chip = document.getElementById("lvlchip");
+  if (!d.ok) { lastMsg = 0; chipText = "No live levels: " + (d.reason || "CamillaDSP not reachable") + ". The unit needs -p 1234 -a 127.0.0.1."; }
+  else {
+    lastMsg = performance.now(); chipText = "";
+    layout.forEach((n, i) => { if (lv[n]) { lv[n].tr = d.rms && d.rms[i] != null ? d.rms[i] : -120; lv[n].tp = d.peak && d.peak[i] != null ? d.peak[i] : -120; } });
+  }
+  chip.textContent = chipText; chip.classList.toggle("show", !!chipText);
+}
+let ls = null;
+function openLevels() {
+  if (ls || document.hidden) return;
+  try { ls = new EventSource("/v1/levels"); ls.onmessage = e => { try { onLevels(JSON.parse(e.data)); } catch (_) {} }; ls.onerror = () => { lastMsg = 0; }; } catch (_) { ls = null; }
+}
+function closeLevels() { if (ls) { ls.close(); ls = null; } }
+document.addEventListener("visibilitychange", () => document.hidden ? closeLevels() : openLevels());
+openLevels();
+
+/* canvas */
+const cv = document.getElementById("room"), cx = cv.getContext("2d");
+let W = 0, H = 0, dpr = 1, col = {}, light = false;
+function readColours() {
+  const cs = getComputedStyle(document.documentElement);
+  light = matchMedia("(prefers-color-scheme: light)").matches && document.documentElement.dataset.theme !== "dark";
+  col = { bed: cs.getPropertyValue("--bed-rgb").trim(), height: cs.getPropertyValue("--height-rgb").trim(), lfe: cs.getPropertyValue("--lfe-rgb").trim(),
+    text: cs.getPropertyValue("--text").trim(), muted: cs.getPropertyValue("--muted").trim(), faint: cs.getPropertyValue("--faint").trim(), bad: cs.getPropertyValue("--bad").trim(), ink: light ? "20,24,32" : "255,255,255" };
+}
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2); const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cx.setTransform(dpr, 0, 0, dpr, 0, 0); readColours();
+}
+new ResizeObserver(resize).observe(cv);
+matchMedia("(prefers-color-scheme: light)").addEventListener("change", resize);
+const P = o => ({ x: o.x * W, y: o.y * H });
+const rgba = (rgb, a) => `rgba(${rgb},${Math.max(0, Math.min(1, a)).toFixed(3)})`;
+
+let focus = { x: LISTENER.x, y: LISTENER.y, a: 0 }, trail = [];
+function drawRoom(now) {
+  cx.clearRect(0, 0, W, H);
+  const pad = 10, rw = W - pad * 2, rh = H - pad * 2;
+  // floor and grid
+  cx.save(); cx.translate(pad, pad);
+  cx.beginPath(); cx.roundRect(0, 0, rw, rh, 18); cx.clip();
+  const floor = cx.createRadialGradient(rw * .5, rh * .6, 0, rw * .5, rh * .6, rw * .65);
+  floor.addColorStop(0, rgba(col.ink, light ? .05 : .045)); floor.addColorStop(1, rgba(col.ink, 0));
+  cx.fillStyle = floor; cx.beginPath(); cx.roundRect(0, 0, rw, rh, 18); cx.fill();
+  cx.strokeStyle = rgba(col.ink, .09); cx.lineWidth = 1; cx.beginPath(); cx.roundRect(.5, .5, rw - 1, rh - 1, 18); cx.stroke();
+  cx.strokeStyle = rgba(col.ink, .04);
+  for (let i = 1; i < 12; i++) { cx.beginPath(); cx.moveTo(rw * i / 12, 8); cx.lineTo(rw * i / 12, rh - 8); cx.stroke(); }
+  for (let i = 1; i < 8; i++) { cx.beginPath(); cx.moveTo(8, rh * i / 8); cx.lineTo(rw - 8, rh * i / 8); cx.stroke(); }
+  // screen
+  const sg = cx.createLinearGradient(rw * .22, 0, rw * .78, 0);
+  sg.addColorStop(0, rgba(col.ink, 0)); sg.addColorStop(.5, rgba(col.ink, .55)); sg.addColorStop(1, rgba(col.ink, 0));
+  cx.fillStyle = sg; cx.fillRect(rw * .22, 5, rw * .56, 3);
+  cx.fillStyle = col.faint; cx.font = "600 9px ui-sans-serif, system-ui, sans-serif"; cx.textAlign = "center"; cx.textBaseline = "top";
+  cx.fillText("SCREEN", rw * .5, 12);
+
+  const sp = {}; for (const n of NAMES) sp[n] = { x: SPK[n].x * rw, y: SPK[n].y * rh };
+  const me = { x: LISTENER.x * rw, y: LISTENER.y * rh };
+  const e = {}; for (const n of NAMES) e[n] = Math.pow(norm(lv[n].db), 1.25);
+  cx.globalCompositeOperation = light ? "source-over" : "lighter";
+  // sound field: soft light around each speaker, in proportion to its level
+  for (const n of NAMES) {
+    const rgb = col[SPK[n].kind], r = rw * (.07 + .3 * e[n]), q = sp[n];
+    if (e[n] < .01) continue;
+    const g = cx.createRadialGradient(q.x, q.y, 0, q.x, q.y, r);
+    g.addColorStop(0, rgba(rgb, (light ? .5 : .62) * e[n])); g.addColorStop(.45, rgba(rgb, (light ? .18 : .22) * e[n])); g.addColorStop(1, rgba(rgb, 0));
+    cx.fillStyle = g; cx.beginPath(); cx.arc(q.x, q.y, r, 0, 7); cx.fill();
+  }
+  // beams from the listening position
+  for (const n of NAMES) {
+    if (SPK[n].kind === "lfe") continue;
+    const rgb = col[SPK[n].kind], q = sp[n], g = cx.createLinearGradient(me.x, me.y, q.x, q.y);
+    g.addColorStop(0, rgba(rgb, 0)); g.addColorStop(1, rgba(rgb, .08 + .6 * e[n]));
+    cx.strokeStyle = g; cx.lineWidth = .8 + 3.2 * e[n]; cx.lineCap = "round"; cx.beginPath(); cx.moveTo(me.x, me.y); cx.lineTo(q.x, q.y); cx.stroke();
+  }
+  cx.globalCompositeOperation = "source-over";
+
+  // centre of energy of the bed and the heights (the sub has no direction)
+  let tw = 0, fx = 0, fy = 0;
+  for (const n of NAMES) { if (SPK[n].kind === "lfe") continue; const w = Math.pow(10, lv[n].db / 10); tw += w; fx += w * sp[n].x; fy += w * sp[n].y; }
+  const loud = Math.max(...NAMES.filter(n => SPK[n].kind !== "lfe").map(n => lv[n].db));
+  const target = tw > 0 && loud > -50 ? { x: fx / tw / rw, y: fy / tw / rh, a: 1 } : { x: LISTENER.x, y: LISTENER.y, a: 0 };
+  focus.x += (target.x - focus.x) * .18; focus.y += (target.y - focus.y) * .18; focus.a += (target.a - focus.a) * .12;
+  if (!reduce && focus.a > .3) { trail.push({ x: focus.x, y: focus.y }); if (trail.length > 40) trail.shift(); } else if (trail.length) trail.shift();
+  for (let i = 0; i < trail.length; i++) { const t = trail[i], k = i / trail.length; cx.fillStyle = rgba(col.ink, .22 * k * focus.a); cx.beginPath(); cx.arc(t.x * rw, t.y * rh, 1 + 2.2 * k, 0, 7); cx.fill(); }
+
+  // listener
+  cx.fillStyle = rgba(col.ink, .5); cx.beginPath(); cx.arc(me.x, me.y - 4, 5, 0, 7); cx.fill();
+  cx.beginPath(); cx.ellipse(me.x, me.y + 8, 11, 6, 0, Math.PI, 0); cx.fill();
+
+  // speakers
+  cx.textAlign = "center";
+  for (const n of NAMES) {
+    const s = SPK[n], q = sp[n], rgb = col[s.kind], k = e[n], pk = norm(lv[n].hold), clip = lv[n].hold > -1;
+    const r0 = 9 + 5 * k;
+    if (pk > .02) { cx.strokeStyle = clip ? col.bad : rgba(rgb, .55); cx.lineWidth = 1.2; cx.beginPath(); cx.arc(q.x, q.y, r0 + 3 + 14 * pk, 0, 7); cx.stroke(); }
+    cx.fillStyle = rgba(rgb, .12 + .88 * k); cx.strokeStyle = rgba(rgb, .35 + .65 * k); cx.lineWidth = 1.5;
+    if (s.kind === "height") cx.setLineDash([3, 3]);
+    cx.beginPath();
+    if (s.kind === "lfe") cx.roundRect(q.x - r0, q.y - r0, r0 * 2, r0 * 2, 5); else cx.arc(q.x, q.y, r0, 0, 7);
+    cx.fill(); cx.stroke(); cx.setLineDash([]);
+    if (s.kind === "height") { cx.fillStyle = rgba(rgb, .9); cx.beginPath(); cx.moveTo(q.x, q.y - 3.5); cx.lineTo(q.x + 3.2, q.y + 2); cx.lineTo(q.x - 3.2, q.y + 2); cx.closePath(); cx.fill(); }
+    cx.fillStyle = col.muted; cx.font = "600 10px ui-sans-serif, system-ui, sans-serif"; cx.textBaseline = "top";
+    const ly = q.y + r0 + 18 * pk + 7; cx.fillText(n, q.x, ly);
+    cx.fillStyle = k > .03 ? col.text : col.faint; cx.font = "11px ui-sans-serif, system-ui, sans-serif"; cx.fillText(dbText(lv[n].db), q.x, ly + 12);
+  }
+  // focus marker on top
+  if (focus.a > .02) {
+    const fxp = focus.x * rw, fyp = focus.y * rh;
+    cx.strokeStyle = rgba(col.ink, .9 * focus.a); cx.lineWidth = 1.5; cx.beginPath(); cx.arc(fxp, fyp, 7, 0, 7); cx.stroke();
+    cx.fillStyle = rgba(col.ink, .9 * focus.a); cx.beginPath(); cx.arc(fxp, fyp, 2, 0, 7); cx.fill();
+  }
+  if (loud <= -70) { cx.fillStyle = col.faint; cx.font = "12px ui-sans-serif, system-ui, sans-serif"; cx.textBaseline = "middle"; cx.fillText(lastMsg ? "Silence" : "No signal data", rw * .5, rh * .36); }
+  cx.restore();
+}
+
+let prev = 0, acc = 0, statAcc = 0;
+function frame(now) {
+  const dt = Math.min(.1, (now - (prev || now)) / 1000); prev = now; acc += dt; statAcc += dt;
+  const stale = !lastMsg || now - lastMsg > 1500;
+  for (const n of NAMES) {
+    const s = lv[n], tr = stale ? -120 : s.tr, tp = stale ? -120 : s.tp;
+    s.db = tr > s.db ? s.db + (tr - s.db) * Math.min(1, dt * 30) : Math.max(tr, s.db - 28 * dt);
+    if (tp >= s.hold) { s.hold = tp; s.holdT = now; } else if (now - s.holdT > 1100) s.hold = Math.max(tp, s.hold - 22 * dt);
+    const m = mel[n];
+    m.fill.style.transform = `scaleY(${norm(s.db).toFixed(3)})`;
+    m.pk.style.transform = `translateY(${(-norm(s.hold) * (m.bar.clientHeight - 2)).toFixed(1)}px)`;
+    m.c.classList.toggle("clip", s.hold > -1);
+  }
+  if (acc > .12) {
+    acc = 0;
+    for (const n of NAMES) { const t = dbText(lv[n].db); if (mel[n].val.textContent !== t) mel[n].val.textContent = t; }
+  }
+  if (statAcc > .5) {
+    statAcc = 0;
+    for (const n of NAMES) mel[n].bar.setAttribute("aria-valuenow", Math.max(FLOOR, lv[n].db).toFixed(0));
+    const dir = NAMES.filter(n => SPK[n].kind !== "lfe"), loud = dir.reduce((a, n) => lv[n].db > lv[a].db ? n : a, dir[0]);
+    document.getElementById("st-loud").textContent = lv[loud].db > -70 ? `${loud} · ${dbText(lv[loud].db)}` : "–";
+    let tot = 0, hs = 0; for (const n of dir) { const w = Math.pow(10, lv[n].db / 10); tot += w; if (SPK[n].kind === "height") hs += w; }
+    document.getElementById("st-height").textContent = loud && lv[loud].db > -70 && tot > 0 ? Math.round(100 * hs / tot) + " %" : "–";
+    document.getElementById("st-lfe").textContent = lv.LFE.db > -70 ? dbText(lv.LFE.db) + " dB" : "–";
+  }
+  if (W) drawRoom(now);
+  requestAnimationFrame(frame);
+}
+resize(); requestAnimationFrame(frame);
 </script>
 </body>
 </html>
