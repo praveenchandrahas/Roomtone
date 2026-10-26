@@ -110,4 +110,27 @@ Hf = PF.response(room, "FC", ff[1:2000])
 check("frequency-domain response matches the time-domain model (FC, 20 Hz-2.9 kHz)", np.max(np.abs(20 * np.log10(np.abs(Ht[1:2000]) / np.abs(Hf)))) < 0.05)
 m = PF.merge_filters([{"name": "a", "freq": 60.0, "gain": -3.0, "q": 4.0}], [{"name": "b", "freq": 60.5, "gain": -2.0, "q": 4.0}, {"name": "c", "freq": 90.0, "gain": -4.0, "q": 4.0}])
 check("merge_filters folds a near-identical filter in and appends a new one", len(m) == 2 and abs(m[0]["gain"] + 5.0) < 1e-6)
+
+# ---- burst_report: matched-filter detection and unbiased level of the ramp burst (what the real rig needs below the room-noise peaks) -----------
+import numpy as _np
+_rng = _np.random.default_rng(5)
+_FS = S.FS
+_burst = S.pink_burst(-26.0)
+_noise = lambda sec, db: _rng.standard_normal(int(sec * _FS)) * 10 ** (db / 20)
+_nf = _noise(4.0, -55.0); _floor = 20 * _np.log10(_np.sqrt(_np.mean(_nf ** 2)))
+_ir = _np.zeros(int(0.3 * _FS)); _ir[int(0.004 * _FS)] = 1.0; _ir[int(0.03 * _FS)] = 0.5; _ir[int(0.12 * _FS)] = -0.3          # a delayed, reverberant path
+def _rec(gain_db):
+    m = _noise(2.2, -55.0); y = _np.convolve(_burst, _ir)[:len(_burst)] * 10 ** (gain_db / 20); i = int(0.6 * _FS)
+    m[i:i + len(y)] += y; return m
+_rms_true = lambda g: 20 * _np.log10(_np.sqrt(_np.mean((_np.convolve(_burst, _ir)[:len(_burst)] * 10 ** (g / 20)) ** 2)))
+_r = S.burst_report(_rec(-5.0), _burst, _floor, noise=_nf)
+check("burst_report finds a burst 12 dB ABOVE the noise floor through a reverberant path, at the right lag", _r["detected"] and abs(_r["lag_s"] - 0.604) < 0.002 and _r["coherent_snr_db"] > 40, f"({_r})")
+check("burst_report: the burst's level is estimated within 1.5 dB", abs(_r["level_dbfs"] - _rms_true(-5.0)) < 1.5 and 10 < _r["over_floor_db"] < 14, f"({_r['level_dbfs']:.1f} vs {_rms_true(-5.0):.1f}, {_r['over_floor_db']:.1f} over the floor)")
+_r = S.burst_report(_rec(-27.0), _burst, _floor, noise=_nf)
+check("burst_report still finds a burst 10 dB BELOW the noise rms (matched filter), which the raw level would call silence (the level below the floor is a noisy estimate: it is only used to say 'too quiet')", _r["detected"] and _r["over_floor_db"] <= 0.0, f"({_r})")
+_fa = 0
+for _ in range(40):
+    _fa += S.burst_report(_noise(2.2, -55.0), _burst, _floor, noise=_nf)["detected"]
+check("burst_report: noise alone is not detected (0 false alarms in 40 recordings)", _fa == 0, f"({_fa})")
+
 finish("test_autocal_stimulus")

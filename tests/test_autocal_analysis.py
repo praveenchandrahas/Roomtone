@@ -156,10 +156,10 @@ check("a sensitive rig: the ramp stops well below the cap and the sweep level fo
 check("the ramp never plays above the cap", max(s[0] for s in rd["steps"]) <= -20.0 and rd["sweep_level_dbfs"] <= -20.0)
 check("channel ID ran on all 8 channels in check mode", all(v["alive"] for v in r.details["channel_id"].values()) and len(r.details["channel_id"]) == 8)
 r, st = check_only(-45.0)
-check("a mic that hears almost nothing at the cap aborts the run with a clear error", st["state"] == "error" and ("hears almost nothing" in st["message"] or "did not follow" in st["message"]), f"({st['message'][:80]})")
+check("a mic that hears almost nothing at the cap aborts the run with a clear error", st["state"] == "error" and ("hears almost nothing" in st["message"] or "too quiet" in st["message"] or "did not pick up" in st["message"]), f"({st['message'][:80]})")
 
 r, st = check_only(-200.0)
-check("a mic that does not follow the bursts at all (room noise only) says so, instead of a generic 'wrong gain'", st["state"] == "error" and "did not follow the bursts" in st["message"], f"({st['message'][:90]})")
+check("a mic that does not follow the bursts at all (room noise only) says so by correlation, instead of a generic 'wrong gain'", st["state"] == "error" and "did not pick up the bursts" in st["message"], f"({st['message'][:90]})")
 check("the ramp's mic recordings are saved in the run folder", len([f for f in os.listdir(r.dir) if f.startswith("ramp_") and f.endswith(".wav")]) >= 4, f"({sorted(os.listdir(r.dir))[:6]})")
 check("the noise floor is also reported as the loudest 100 ms frame, and the ramp is compared with that", "noise_floor_loudest_frame_dbfs" in r.details and r.details["noise_floor_loudest_frame_dbfs"] >= r.details["noise_floor_dbfs"] - 0.01)
 

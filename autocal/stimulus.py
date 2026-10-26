@@ -151,6 +151,41 @@ def pink_burst(level_dbfs, dur=1.0, lo=50.0, hi=4000.0, seed=1, fs=FS):
     return x
 
 
+def _xcorr(mic, tmpl, fs=FS):
+    """c[k] = sum_i mic[k+i] * tmpl[i] for every lag k with the template fully inside the recording."""
+    n = len(tmpl); L = 1 << int(np.ceil(np.log2(len(mic) + n)))
+    return np.fft.irfft(np.fft.rfft(mic, L) * np.conj(np.fft.rfft(tmpl, L)), L)[:len(mic) - n + 1]
+
+
+def burst_report(mic, burst, floor_dbfs, noise=None, fs=FS, detect_db=18.0):
+    """Finds the known burst in a mic recording by cross-correlation (a matched filter, so it works far below the room noise) and reports
+    its level at the mic, free of the bias of 'loudest 100 ms frame of a fluctuating room'.
+
+    The null spread (what the correlation does with noise alone) is measured from the run's own noise-floor recording `noise` when given:
+    the recording of the burst cannot serve for that, because the room response makes the correlation non-zero around the peak.
+    Returns dict: detected, coherent_snr_db (correlation peak over that spread; noise alone peaks at about 13 dB, so detection needs
+    detect_db = 18), lag_s, level_dbfs (rms of the burst alone at the mic: power in the burst window minus the mean noise-floor power;
+    equals the floor when not detected), over_floor_db."""
+    mic = np.asarray(mic, dtype=np.float64); n = len(burst)
+    none = {"detected": False, "coherent_snr_db": 0.0, "lag_s": None, "level_dbfs": float(floor_dbfs), "over_floor_db": 0.0}
+    if len(mic) < n + int(0.2 * fs):
+        return none
+    tmpl = np.asarray(burst, dtype=np.float64) / np.sqrt(np.sum(np.asarray(burst, dtype=np.float64) ** 2))     # unit energy: white noise of std s gives std s
+    c = _xcorr(mic, tmpl, fs)
+    k = int(np.argmax(np.abs(c))); peak = float(abs(c[k]))
+    if noise is not None and len(noise) >= n + fs // 2:
+        c0 = _xcorr(np.asarray(noise, dtype=np.float64), tmpl, fs)
+    else:                                                    # fallback: lags that cannot overlap the burst at all (needs a long recording)
+        keep = np.ones(len(c), bool); keep[max(0, k - n):k + n] = False
+        c0 = c[keep]
+    spread = 1.4826 * float(np.median(np.abs(c0 - np.median(c0)))) if c0.size > 100 else 0.0
+    coh = float(20 * np.log10(peak / max(spread, 1e-12))) if spread > 0 else 0.0
+    detected = coh >= detect_db
+    p_win = float(np.mean(mic[k:k + n] ** 2)); p_floor = 10 ** (floor_dbfs / 10)
+    level = float(10 * np.log10(p_win - p_floor)) if (detected and p_win > p_floor) else float(floor_dbfs)     # below the floor: found, but not measurable
+    return {"detected": bool(detected), "coherent_snr_db": coh, "lag_s": k / fs, "level_dbfs": level, "over_floor_db": float(level - floor_dbfs)}
+
+
 def ramp_decision(steps, floor_dbfs, target_db=RAMP_SNR_TARGET_DB, cap=CAP_DBFS):
     """steps: list of (generator level dBFS, mic rms dBFS) in ramp order. Returns (stop_level, snr_db_at_stop, reached_target).
 
