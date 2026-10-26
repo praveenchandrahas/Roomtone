@@ -9,7 +9,7 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/theater_status.lua"
 MARK="# theater_status (added by install-theater-status.sh)"
-LINES='c script-binding theater_status/control'
+BINDING='c script-binding theater_status/control'   # not named LINES: that is a bash variable (terminal rows) and was written into input.conf as e.g. 42
 [ -f "$SRC" ] || { echo "theater_status.lua must be next to this script."; exit 1; }
 
 strip_block() {   # remove the marked block (the mark and the theater_status bindings under it) from input.conf $1
@@ -39,11 +39,12 @@ for CONF in "$HOME/.config/mpv" "$HOME/.config/mpv-object-audio"; do
   install -m 644 "$SRC" "$CONF/scripts/theater_status.lua"
   echo "installed: $CONF/scripts/theater_status.lua"
   if [ "${1:-}" = --bindings ]; then
+    if grep -qE "^[0-9]+$" "$CONF/input.conf" 2>/dev/null; then sed -i -E "/^[0-9]+$/d" "$CONF/input.conf"; echo "  removed stray number-only lines (left by an earlier version of this installer) from $CONF/input.conf"; fi
     if grep -qF "$MARK" "$CONF/input.conf" 2>/dev/null; then strip_block "$CONF/input.conf"; echo "  replaced the earlier keys in $CONF/input.conf"; fi
     if grep -qE "^[[:space:]]*c[[:space:]]" "$CONF/input.conf" 2>/dev/null; then
       echo "  NOTE: c is already bound in $CONF/input.conf; the new binding comes later in the file and wins. Edit it there if you prefer another key."
     fi
-    printf '\n%s\n%s\n' "$MARK" "$LINES" >> "$CONF/input.conf"
+    printf '\n%s\n%s\n' "$MARK" "$BINDING" >> "$CONF/input.conf"
     echo "  key added to $CONF/input.conf"
   fi
 done
@@ -51,5 +52,5 @@ done
 if [ "${1:-}" != remove ] && [ "${1:-}" != --bindings ]; then
   echo
   echo "Add this line to input.conf in the same folder(s), or re-run with --bindings to do it for you:"
-  echo "  $LINES"
+  echo "  $BINDING"
 fi
