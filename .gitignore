@@ -12,3 +12,6 @@ __pycache__/
 *-cal.txt
 *.cal
 .env
+
+# autocal run folders (real runs hold recordings and measurements)
+runs/

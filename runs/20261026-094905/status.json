@@ -1,1 +1,0 @@
-{"id": "20261026-094905", "state": "done", "mode": "single", "position": 1, "positions_total": 1, "step": "dry run", "progress": 1.0, "message": "dry run: nothing played", "mic": {"peak_dbfs": null, "rms_dbfs": null, "noise_floor_dbfs": null}, "level_dbfs": null, "prompt": null, "simulated": true, "error": null, "updated": "2026-10-26T09:49:05+00:00"}
