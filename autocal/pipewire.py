@@ -13,6 +13,7 @@ The measurement runs THROUGH CamillaDSP (the owner's decision), so the played fi
 One continuous file per position is played (not one pw-play per sweep): the sync-chirp placement needs the chirps and the sweeps in one clock.
 """
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -69,9 +70,22 @@ class PipewireBackend(Backend):
         mic = self.mic if self.mic in sources else None
         if self.mic and not mic:
             notes.append(f"MIC={self.mic} is not among the capture devices: {', '.join(sources) or 'none'}")
-        rc, out = self._run(self.pactl, "list", "short", "sink-inputs")
-        streams = [l.split("\t")[0] + ":" + (l.split("\t")[-1] if "\t" in l else "") for l in out.splitlines() if l.strip()]
+        streams = self._other_streams()
         return {"mic": mic, "other_streams": streams, "profile": "live CamillaDSP profile (room.json)", "notes": notes}
+
+    def _other_streams(self):
+        """Playback streams other than CamillaDSP's own (its playback node is always a sink-input of the pulse view: 8ch float32).
+        Parses `pactl list sink-inputs`; each stream is named from application.name, node.name or media.name."""
+        rc, out = self._run(self.pactl, "list", "sink-inputs")
+        streams = []
+        for blk in re.split(r"(?m)^Sink Input #", out)[1:]:
+            idx = blk.split("\n", 1)[0].strip()
+            props = dict(re.findall(r'(?m)^\s*(application\.name|node\.name|media\.name) = "([^"]*)"', blk))
+            names = [props.get(k, "") for k in ("application.name", "node.name", "media.name")]
+            if any("camilladsp" in n.lower() for n in names):
+                continue
+            streams.append(f"{idx}:{next((n for n in names if n), '?')}")
+        return streams
 
     def current_room(self):
         return PF.current_room()
