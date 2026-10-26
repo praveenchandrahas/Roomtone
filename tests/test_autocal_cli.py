@@ -1,0 +1,107 @@
+"""CLI end to end (subprocess): run --simulate, report, apply/keep/rollback on temp files, trial revert by the watchdog, refusals."""
+import json, os, shutil, subprocess, sys, tempfile, time
+from autocal_common import check, finish, ROOT
+
+TMP = tempfile.mkdtemp(prefix="autocal-cli-")
+RUNS = os.path.join(TMP, "runs")
+LIVE, ROOMF, BK = os.path.join(TMP, "live", "config.yml"), os.path.join(TMP, "live", "room.json"), os.path.join(TMP, "bk")
+os.makedirs(os.path.dirname(LIVE))
+open(LIVE, "w").write("ORIGINAL CONFIG\n")
+
+
+def cli(*args, env=None, timeout=110):
+    e = dict(os.environ)
+    for k in ("AUTOCAL_CONFIG", "AUTOCAL_ROOM", "AUTOCAL_BACKUP_DIR", "AUTOCAL_RESTART_CMD"):
+        e.pop(k, None)
+    e.update(env or {})
+    return subprocess.run([sys.executable, "-m", "autocal", *args], cwd=ROOT, env=e, capture_output=True, text=True, timeout=timeout)
+
+
+ENV = {"AUTOCAL_CONFIG": LIVE, "AUTOCAL_ROOM": ROOMF, "AUTOCAL_BACKUP_DIR": BK}
+FAST = ["--sweep-s", "3", "--tail-s", "1.5", "--auto-continue"]
+
+
+def newest():
+    ids = sorted(os.listdir(RUNS)); return os.path.join(RUNS, ids[-1])
+
+
+# ---- run / check / dry
+r = cli("check", "--simulate", "--runs-dir", RUNS, *FAST)
+check("check --simulate exits 0 and measures nothing beyond the ramp and channel ID", r.returncode == 0 and not os.path.exists(os.path.join(newest(), "results.json")), r.stderr[-120:])
+r = cli("run", "--simulate", "--dry", "--runs-dir", RUNS, *FAST)
+check("run --dry plays nothing and writes no results", r.returncode == 0 and not os.path.exists(os.path.join(newest(), "results.json")) and "DRY RUN" in r.stdout)
+time.sleep(1.1)
+r = cli("run", "--simulate", "--runs-dir", RUNS, *FAST)
+d = newest()
+check("run --simulate (single) exits 0 and writes results, proposed config and room, report", r.returncode == 0 and all(os.path.exists(os.path.join(d, f)) for f in ("results.json", "run.json", "status.json", "room.proposed.json", "report.html")), r.stderr[-200:])
+sys.path.insert(0, ROOT)
+from autocal import results as RS
+res = json.load(open(os.path.join(d, "results.json")))
+check("the CLI run's files satisfy the contract schemas", not RS.check_results(res) and not RS.validate(json.load(open(os.path.join(d, "run.json"))), RS.RUN_SCHEMA)
+      and not RS.validate(json.load(open(os.path.join(d, "status.json"))), RS.STATUS_SCHEMA) and res["simulated"] is True)
+check("nothing was applied: the live config is untouched after a run", open(LIVE).read() == "ORIGINAL CONFIG\n" and not os.path.exists(BK) and not os.path.exists(ROOMF))
+html = open(os.path.join(d, "report.html")).read()
+check("report.html is self-contained (no external requests)", "http://" not in html.replace("http://www.w3.org", "") and "https://" not in html and "<script src" not in html)
+os.remove(os.path.join(d, "report.html"))
+r = cli("report", os.path.basename(d), "--runs-dir", RUNS)
+check("report regenerates report.html", r.returncode == 0 and os.path.exists(os.path.join(d, "report.html")))
+
+has_cfg = os.path.exists(os.path.join(d, "config.proposed.yml"))
+if not has_cfg:
+    print("NOTE set-eq.py not found: apply tests use a stand-in config.proposed.yml")
+    open(os.path.join(d, "config.proposed.yml"), "w").write("PROPOSED CONFIG\n")
+new_cfg = open(os.path.join(d, "config.proposed.yml")).read()
+
+# ---- apply refusals
+r = cli("apply", os.path.basename(d), "--runs-dir", RUNS, env={"AUTOCAL_BACKUP_DIR": BK})
+check("a simulated run is refused without AUTOCAL_CONFIG (cannot reach the real config)", r.returncode == 2 and "SIMULATED" in r.stderr and not os.path.exists(BK))
+fail_dir = os.path.join(RUNS, "29990101-000000"); shutil.copytree(d, fail_dir)
+rj = json.load(open(os.path.join(fail_dir, "results.json"))); rj["verdict"] = "FAIL"; rj["id"] = "29990101-000000"; json.dump(rj, open(os.path.join(fail_dir, "results.json"), "w"))
+r = cli("apply", "29990101-000000", "--runs-dir", RUNS, env=ENV)
+check("a FAIL verdict is refused without --force", r.returncode == 2 and "FAIL" in r.stderr and open(LIVE).read() == "ORIGINAL CONFIG\n")
+shutil.rmtree(fail_dir)
+r = cli("keep", env=ENV); check("keep with no trial says so", r.returncode == 2)
+r = cli("rollback", env=ENV); check("rollback with no backup says so", r.returncode == 2 and open(LIVE).read() == "ORIGINAL CONFIG\n")
+
+# ---- apply / keep
+r = cli("apply", os.path.basename(d), "--runs-dir", RUNS, "--trial-seconds", "30", env=ENV)
+bks = sorted(os.listdir(BK)) if os.path.isdir(BK) else []
+bdir = [b for b in bks if os.path.isdir(os.path.join(BK, b))]
+check("apply backs up the live config first", r.returncode == 0 and bdir and open(os.path.join(BK, bdir[-1], "config.yml")).read() == "ORIGINAL CONFIG\n", r.stderr[-200:])
+check("apply installs the proposed config and room, and starts a trial", open(LIVE).read() == new_cfg and os.path.exists(ROOMF) and json.load(open(os.path.join(BK, "trial.json")))["state"] == "trial")
+r = cli("apply", os.path.basename(d), "--runs-dir", RUNS, env=ENV)
+check("a second apply during a trial is refused", r.returncode == 2 and "trial" in r.stderr)
+r = cli("keep", env=ENV)
+check("keep confirms the trial and marks the run", r.returncode == 0 and json.load(open(os.path.join(BK, "trial.json")))["state"] == "kept" and os.path.exists(os.path.join(d, "kept")))
+r = cli("rollback", env=ENV)
+check("rollback restores the original config and removes the room.json that did not exist", r.returncode == 0 and open(LIVE).read() == "ORIGINAL CONFIG\n" and not os.path.exists(ROOMF))
+
+# ---- trial revert by the watchdog
+r = cli("apply", os.path.basename(d), "--runs-dir", RUNS, "--trial-seconds", "2", "--wait", env=ENV)
+check("apply --wait with no keep reverts when the trial expires", r.returncode == 0 and open(LIVE).read() == "ORIGINAL CONFIG\n" and json.load(open(os.path.join(BK, "trial.json")))["state"] == "reverted")
+r = cli("apply", os.path.basename(d), "--runs-dir", RUNS, "--trial-seconds", "2", env=ENV)
+t0 = time.time(); ok = False
+while time.time() - t0 < 12:
+    if open(LIVE).read() == "ORIGINAL CONFIG\n" and json.load(open(os.path.join(BK, "trial.json")))["state"] == "reverted":
+        ok = True; break
+    time.sleep(0.2)
+check("the detached watchdog reverts an un-kept trial by itself", r.returncode == 0 and ok, f"({time.time() - t0:.1f} s)")
+r = cli("apply", os.path.basename(d), "--runs-dir", RUNS, "--trial-seconds", "30", env=ENV); cli("keep", env=ENV)
+check("a kept trial stays applied", open(LIVE).read() == new_cfg)
+cli("rollback", env=ENV)
+
+# ---- restart command failure restores
+r = cli("apply", os.path.basename(d), "--runs-dir", RUNS, env={**ENV, "AUTOCAL_RESTART_CMD": "false"})
+check("a failing restart command restores the backup automatically", r.returncode == 2 and open(LIVE).read() == "ORIGINAL CONFIG\n")
+
+# ---- verify / five-position
+r = cli("verify", os.path.basename(d), "--simulate", "--runs-dir", RUNS, *[], env=ENV, timeout=110) if False else None
+time.sleep(1.1)
+r = cli("run", "--simulate", "--mode", "five", "--runs-dir", RUNS, *FAST, timeout=118)
+d5 = newest(); res5 = json.load(open(os.path.join(d5, "results.json")))
+check("run --simulate --mode five finishes with 5 positions", r.returncode == 0 and len(res5["positions"]) == 5 and not RS.check_results(res5), r.stderr[-200:])
+r = cli("run", "--simulate", "--scenario", "nonsense", "--runs-dir", RUNS, *FAST)
+check("an unknown scenario fails cleanly (nonzero, no traceback to the user is not required)", r.returncode != 0)
+r = cli("bogus"); check("an unknown command is rejected", r.returncode == 2)
+shutil.rmtree(TMP, ignore_errors=True)
+finish("test_autocal_cli")

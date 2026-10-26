@@ -1,5 +1,7 @@
 # theater-measurement
 
+> **Part of the [Software Defined Home Theatre](https://github.com/praveenchandrahas/Software-Defined-Home-Theatre) project.** The main repository holds the documentation, build log, results and the installer checks; this is one of its parts. Sibling repositories: [linux-theater-dsp](https://github.com/praveenchandrahas/linux-theater-dsp) · [mpv-object-audio](https://github.com/praveenchandrahas/mpv-object-audio) · [seekthumbs](https://github.com/praveenchandrahas/seekthumbs).
+
 Test signals, recording procedures and analysers used to measure and tune a DIY Linux home theatre with a measurement microphone (a Dayton iMM-6S in the original).
 Everything here was written for one room and one seat; the kits are general enough to reuse, but read each kit's README for its assumptions.
 
@@ -14,6 +16,7 @@ Everything here was written for one room and one seat; the kits are general enou
 | `scripts/rec.sh`, `scripts/tone-test.sh` | recording (mic gain) and a tone helper |
 | `tools/drifttest/` | does a second subwoofer (another clock) stay in phase with the first? Measures the delay between two playback paths over time (ppm drift, jitter, steps) |
 | `tools/miccal.py` | removes the measurement microphone's response from every recording the analysers read (see below) |
+| `autocal/` | **automated room calibration** ("our own Audyssey"): measures every speaker through the current CamillaDSP profile and proposes delay, trim, polarity, bass-EQ and heights corrections, with a local web page and graphs. Never applies anything by itself. Built and tested against a simulated room only: see `autocal/README.md` |
 | `data/` | small REW exports and the microphone calibration file (`data/README.md`); large recordings are not committed |
 
 The figure-drawing scripts that turn these results into the project's graphs are in the [sdht](https://github.com/praveenchandrahas/Software-Defined-Home-Theatre) repository (`tools/make-*.py`), because they also use the router's filter
