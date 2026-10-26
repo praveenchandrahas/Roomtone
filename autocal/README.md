@@ -19,7 +19,7 @@ Tests: `bash tests/run.sh` (analysis test takes about 2 minutes). Test env overr
 
 **Only the owner can validate at the rig:**
 - real SNR, mic clipping margins, and every threshold (SNR gate 25 dB at 40 Hz, harmonic limit -20 dBc, polarity margin, null masking, 3 dB target rms): these are reasoned guesses, not calibrated
-- `pw-record` stdout format and `pw-play --target camilladsp-capture` (PipewireBackend is UNTESTED ON HARDWARE)
+- `pw-record` stdout format (PipewireBackend is UNTESTED ON HARDWARE). Playback now uses the method of `scripts/play-through-camilla.sh` (`pw-play` with `node.autoconnect=false`, then `pw-link` each port to `camilladsp-capture:input_N`), which is what the earlier measurements used; the older `--target camilladsp-capture` path remains as `AUTOCAL_PLAY_METHOD=target`. The autocal code around it is still unrun on the rig
 - trial/rollback across a live CamillaDSP restart and relink (the real-rig path in install.py is untested)
 - mic calibration use, and above all whether the result sounds right
 - whether the 3 dB rms-to-target is reachable: in the sim, drone2's taste cuts and nulls leave about 3.8 dB after correction

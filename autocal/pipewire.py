@@ -1,10 +1,12 @@
 """PipewireBackend: plays through PipeWire with pw-play and records the measurement mic with pw-record, with live metering and instant abort.
 
-*** UNTESTED ON HARDWARE. *** It is unit-tested only against fake pw-play / pw-record executables (tests/test_autocal_backend.py), which prove the
+*** UNTESTED ON HARDWARE. *** It is unit-tested only against fake pw-play / pw-record / pw-link executables (tests/test_autocal_sim.py), which prove the
 process handling, metering loop and abort timing, not that the real tools behave as assumed. Things the owner must verify at the rig:
   * `pw-record --target MIC --rate 48000 --channels 1 --format f32 -` really streams to stdout (a RIFF header, then float32 samples);
-  * `pw-play --target camilladsp-capture --channels 8 FILE.wav` reaches CamillaDSP's 8 input ports in hardware order (the target name and channel
-    mapping are the least certain part; set AUTOCAL_PLAY_TARGET, or link the ports by hand with pw-link as route-mpv.sh does);
+  * the PLAY path. Default ("link", AUTOCAL_PLAY_METHOD=link) is the method of the owner's own play-through-camilla.sh, which he has used for every
+    measurement on this rig: `pw-play -P "{ node.name=autocal-play node.autoconnect=false }" --channel-map FL,FR,RL,RR,FC,LFE,SL,SR FILE.wav`, wait for
+    its 8 output ports, then `pw-link` port i -> camilladsp-capture:input_{i+1}. The older "target" method (AUTOCAL_PLAY_METHOD=target:
+    `pw-play --target camilladsp-capture --channels 8`) is kept as a fallback but is the less certain of the two;
   * the mic name (env MIC, from `./rec.sh list`) and that the mic's capture level stays fixed during the run (it acts after the clip point);
   * how quickly SIGTERM silences pw-play at your quantum (the budget is 250 ms from the abort event).
 The measurement runs THROUGH CamillaDSP (the owner's decision), so the played file goes to CamillaDSP's capture node, not to the USB sink.
@@ -28,10 +30,17 @@ from .backend import Backend, BackendError, Capture, BLOCK_S, FS
 class PipewireBackend(Backend):
     simulated = False
     name = "PipeWire (UNTESTED ON HARDWARE)"
+    NODE = "autocal-play"                                   # node name of the test stream (link method)
+    CH_MAP = "FL,FR,RL,RR,FC,LFE,SL,SR"                     # hardware order; file channel i -> CamillaDSP capture input i+1
 
-    def __init__(self, mic=None, target=None, pw_play="pw-play", pw_record="pw-record", pactl="pactl", workdir=None, kill_grace_s=0.2):
+    def __init__(self, mic=None, target=None, pw_play="pw-play", pw_record="pw-record", pactl="pactl", workdir=None, kill_grace_s=0.2,
+                 pw_link="pw-link", method=None, link_timeout_s=3.0):
         self.mic = mic or os.environ.get("MIC")
         self.target = target or os.environ.get("AUTOCAL_PLAY_TARGET", "camilladsp-capture")
+        self.method = method or os.environ.get("AUTOCAL_PLAY_METHOD", "link")
+        if self.method not in ("link", "target"):
+            raise BackendError(f"AUTOCAL_PLAY_METHOD must be link or target, not {self.method!r}")
+        self.pw_link, self.link_timeout_s = pw_link, link_timeout_s
         self.pw_play, self.pw_record, self.pactl = pw_play, pw_record, pactl
         self.workdir = workdir or tempfile.mkdtemp(prefix="autocal-")
         self.kill_grace_s = kill_grace_s
@@ -48,6 +57,13 @@ class PipewireBackend(Backend):
         notes = []
         if not shutil.which(self.pw_play) and not os.path.isfile(self.pw_play):
             raise BackendError(f"{self.pw_play} not found (pipewire-bin)")
+        if self.method == "link":
+            if not shutil.which(self.pw_link) and not os.path.isfile(self.pw_link):
+                raise BackendError(f"{self.pw_link} not found (pipewire-bin)")
+            rc, out = self._run(self.pw_link, "-i")
+            n_in = sum(1 for l in out.splitlines() if l.strip().startswith(self.target + ":input_"))
+            if n_in != 8:
+                raise BackendError(f"{self.target} has {n_in} input ports (need 8). Is CamillaDSP running? Try: eq status")
         rc, out = self._run(self.pactl, "list", "short", "sources")
         sources = [l.split("\t")[1] for l in out.splitlines() if "\t" in l and ".monitor" not in l]
         mic = self.mic if self.mic in sources else None
@@ -116,8 +132,7 @@ class PipewireBackend(Backend):
                     b, pend = pend[:nb], pend[nb:]
                     got.append(b); n_got += nb; t = n_got / FS
                     if not silent and not play_started and t >= pre_s:
-                        play = subprocess.Popen([self.pw_play, "--target", self.target, "--channels", "8", wav], stdout=subprocess.DEVNULL,
-                                                stderr=subprocess.DEVNULL)
+                        play = self._start_player(wav)
                         play_started = True; t_end = t + dur + post_s
                     if monitor is not None:
                         why = monitor(t, b)
@@ -139,6 +154,33 @@ class PipewireBackend(Backend):
         cap.x = np.concatenate(got) if got else np.zeros(0)
         cap.stop_t = cap.stop_t or len(cap.x) / FS
         return cap
+
+    def _start_player(self, wav):
+        """Starts pw-play and makes sure its 8 channels reach CamillaDSP's 8 capture inputs. Nothing is audible until the links exist
+        (autoconnect is off), and the stimulus starts with seconds of silence, so the short wait here costs nothing."""
+        if self.method == "target":
+            return subprocess.Popen([self.pw_play, "--target", self.target, "--channels", "8", wav], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen([self.pw_play, "-P", "{ node.name=%s node.autoconnect=false }" % self.NODE, "--channel-map", self.CH_MAP, wav],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + self.link_timeout_s
+        outs = []
+        while True:
+            rc, out = self._run(self.pw_link, "-o")
+            outs = [l.strip() for l in out.splitlines() if l.strip().startswith(self.NODE + ":output_")]
+            if len(outs) == 8:
+                break
+            if proc.poll() is not None:
+                raise BackendError("pw-play exited before its ports appeared")
+            if time.monotonic() > deadline:
+                self._stop(proc)
+                raise BackendError(f"expected 8 output ports from the test stream, found {len(outs)}")
+            time.sleep(0.1)
+        for i, o in enumerate(outs):                      # listing order = channel order, as in play-through-camilla.sh
+            rc, _ = self._run(self.pw_link, o, f"{self.target}:input_{i + 1}")
+            if rc != 0:
+                self._stop(proc)
+                raise BackendError(f"could not link {o} -> {self.target}:input_{i + 1}")
+        return proc
 
     def _stop(self, proc, term_only=False):
         """Stops a child process: SIGTERM, then SIGKILL after kill_grace_s. Returns when the process is gone."""

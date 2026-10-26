@@ -159,22 +159,40 @@ with tempfile.TemporaryDirectory() as td:
         elif sys.argv[1:4] == ["list", "short", "sink-inputs"]:
             if "--busy" in sys.argv or __import__("os").environ.get("FAKE_BUSY"): print("77\\t1\\t5\\tmpv\\tPipeWire")
         '''))
-    for p in (rec, play, pactl):
+    plink = os.path.join(td, "fake-pw-link")
+    open(plink, "w").write(textwrap.dedent(f'''\
+        #!/usr/bin/env python3
+        import sys, os
+        log = {log!r}
+        n_cap = int(os.environ.get("FAKE_CAPTURE_PORTS", "8")); n_out = int(os.environ.get("FAKE_PLAY_PORTS", "8"))
+        names = "FL FR RL RR FC LFE SL SR".split()
+        if sys.argv[1:] == ["-i"]:
+            for i in range(n_cap): print(f"camilladsp-capture:input_{{i + 1}}")
+        elif sys.argv[1:] == ["-o"]:
+            if os.path.exists(log) and "play-started" in open(log).read():
+                for nm in names[:n_out]: print(f"autocal-play:output_{{nm}}")
+        elif len(sys.argv) == 3:
+            open(log, "a").write("link " + sys.argv[1] + " " + sys.argv[2] + "\\n")
+        '''))
+    for p in (rec, play, pactl, plink):
         os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
-    pb = PipewireBackend(mic="usb-mic-source", pw_play=play, pw_record=rec, pactl=pactl, workdir=td, kill_grace_s=0.3)
+    pb = PipewireBackend(mic="usb-mic-source", pw_play=play, pw_record=rec, pactl=pactl, pw_link=plink, workdir=td, kill_grace_s=0.3)
     pf = pb.preflight()
     check("PipewireBackend preflight finds the mic among the non-monitor sources and sees no other streams", pf["mic"] == "usb-mic-source" and pf["other_streams"] == [], f"({pf})")
     os.environ["FAKE_BUSY"] = "1"
     check("PipewireBackend preflight reports another stream on the sink", len(pb.preflight()["other_streams"]) == 1)
     del os.environ["FAKE_BUSY"]
-    check("a wrong MIC name gives mic=None and a note", PipewireBackend(mic="nope", pw_play=play, pw_record=rec, pactl=pactl, workdir=td).preflight()["mic"] is None)
+    check("a wrong MIC name gives mic=None and a note", PipewireBackend(mic="nope", pw_play=play, pw_record=rec, pactl=pactl, pw_link=plink, workdir=td).preflight()["mic"] is None)
     x = np.zeros((int(0.6 * FS), 8)); x[:, 0] = S.pink_burst(-30, dur=0.6)
     t0 = time.monotonic()
     cap = pb.play_record(x, SF.SafetyMonitor(check_clipping=True), stage="fake", pre_s=0.3, post_s=0.3)
     wall = time.monotonic() - t0
     lg = open(log).read()
-    check("fake pw-play/pw-record: a full play+record returns the recorded samples (about pre+play+post seconds)", cap.aborted is None and 1.0 < cap.duration < 1.5 and 1.0 < wall < 2.5 and "play-started" in lg and "ch=8" in lg and '"--target", "camilladsp-capture"' in lg,
+    check("fake pw-play/pw-record: a full play+record returns the recorded samples (about pre+play+post seconds)", cap.aborted is None and 1.0 < cap.duration < 1.5 and 1.0 < wall < 2.5 and "play-started" in lg and "ch=8" in lg and '"-P"' in lg and "FL,FR,RL,RR,FC,LFE,SL,SR" in lg and "--target" not in lg,
           f"({cap.duration:.2f} s, wall {wall:.2f} s)")
+    links = [l.split() for l in lg.splitlines() if l.startswith("link ")]
+    check("link method: the 8 test-stream ports are linked, in channel order, to camilladsp-capture:input_1..8",
+          [(l[1], l[2]) for l in links] == [(f"autocal-play:output_{n}", f"camilladsp-capture:input_{i + 1}") for i, n in enumerate("FL FR RL RR FC LFE SL SR".split())], f"({links})")
     check("the recording's float32 samples arrive intact (440 Hz tone at 0.01)", abs(np.max(np.abs(cap.x)) - 0.01) < 1e-4)
     open(log, "w").close()
     stop_at = {"t": None}
@@ -201,4 +219,32 @@ with tempfile.TemporaryDirectory() as td:
     except BackendError:
         ok = True
     check("no MIC set is a clear error", ok)
+    # -- link method failure modes and the fallback method
+    xs = np.zeros((int(0.6 * FS), 8)); xs[:, 0] = S.pink_burst(-30, dur=0.6)
+    open(log, "w").close(); os.environ["FAKE_PLAY_PORTS"] = "7"
+    pb7 = PipewireBackend(mic="usb-mic-source", pw_play=play, pw_record=rec, pactl=pactl, pw_link=plink, workdir=td, kill_grace_s=0.3, link_timeout_s=0.5)
+    try:
+        pb7.play_record(xs, None, stage="seven", pre_s=0.3, post_s=0.3); ok = False; msg = ""
+    except BackendError as e:
+        ok = True; msg = str(e)
+    time.sleep(0.2); lg = open(log).read()
+    check("only 7 test-stream ports: a clear error, no link made, pw-play terminated", ok and "found 7" in msg and "link " not in lg and "play-terminated" in lg, f"({msg})")
+    del os.environ["FAKE_PLAY_PORTS"]
+    os.environ["FAKE_CAPTURE_PORTS"] = "0"
+    try:
+        pb.preflight(); ok = False; msg = ""
+    except BackendError as e:
+        ok = True; msg = str(e)
+    check("preflight: CamillaDSP capture ports missing is a clear error that points at 'eq status'", ok and "0 input ports" in msg and "eq status" in msg, f"({msg})")
+    del os.environ["FAKE_CAPTURE_PORTS"]
+    open(log, "w").close()
+    pbt = PipewireBackend(mic="usb-mic-source", pw_play=play, pw_record=rec, pactl=pactl, pw_link=plink, workdir=td, kill_grace_s=0.3, method="target")
+    pbt.play_record(xs, None, stage="target", pre_s=0.3, post_s=0.3)
+    lg = open(log).read()
+    check("method=target keeps the older pw-play --target path (no pw-link calls)", '"--target", "camilladsp-capture"' in lg and "link " not in lg)
+    try:
+        PipewireBackend(mic="x", method="nonsense"); ok = False
+    except BackendError:
+        ok = True
+    check("an unknown AUTOCAL_PLAY_METHOD is refused", ok)
 finish("test_autocal_sim")
