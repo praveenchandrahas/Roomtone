@@ -98,4 +98,23 @@ f = np.fft.rfftfreq(1 << 16, 1 / FS); H = np.where((f > 400) & (f < 600), 1.0, 0
 check("band_level_db: a flat band of 1.0 reads 0 dB", abs(IR.band_level_db(f, H, 420, 580)) < 1e-9)
 sm = IR.smooth_db(f, H, np.array([500.0, 5000.0]), 1 / 6)
 check("smooth_db follows the response", abs(sm[0]) < 0.3 and abs(sm[1] + 20) < 0.3, f"({sm})")
+
+# ---- noise reference: separate silent recordings give a stable noise power; one 180 ms window does not
+from autocal import stimulus as _ST
+_rng = np.random.default_rng(5)
+_stim = _ST.sweep_at_level("FL", -20.0, 7.0); _slot = 9.5
+_ref = IR.noise_ir_power([_rng.normal(0, 0.01, 20 * FS), _rng.normal(0, 0.01, 20 * FS)], _stim, 35, 45, _slot)
+_ref2 = IR.noise_ir_power([_rng.normal(0, 0.01, 20 * FS), _rng.normal(0, 0.01, 20 * FS)], _stim, 35, 45, _slot)
+_rep = [10 * np.log10(IR.noise_ir_power([_rng.normal(0, 0.01, 20 * FS), _rng.normal(0, 0.01, 20 * FS)], _stim, 35, 45, _slot)) for _ in range(8)]
+check("noise_ir_power: repeated 40 s noise recordings scatter by under 1 dB (one 180 ms window scatters by about 4 dB)", np.std(_rep) < 1.0 and abs(10 * np.log10(_ref / _ref2)) < 2.5, f"(sd {np.std(_rep):.2f} dB)")
+check("noise_ir_power: 3 dB more noise reads 3 dB higher", abs(10 * np.log10(IR.noise_ir_power([_rng.normal(0, 0.01 * 10 ** (3 / 20), 20 * FS), _rng.normal(0, 0.01 * 10 ** (3 / 20), 20 * FS)], _stim, 35, 45, _slot) / _ref) - 3.0) < 1.5)
+check("noise_ir_power: too little audio gives None", IR.noise_ir_power([np.zeros(FS)], _stim, 35, 45, _slot) is None)
+# a known IR (a 40 Hz burst) in noise: the SNR from a reference equals the SNR from the in-sweep window on average, and moves with the noise level
+_h = np.zeros(1 << 19); _pre = 0.2; _c = int(_pre * FS)
+_t = np.arange(int(0.1 * FS)) / FS; _h[_c:_c + len(_t)] = 0.02 * np.sin(2 * np.pi * 40 * _t) * np.hanning(len(_t))
+_noise = lambda sd: _rng.normal(0, sd, len(_h))
+_hs = _h + 0.0 * _noise(1)
+_pn = IR.noise_ir_power([_rng.normal(0, 0.01, 20 * FS)], _stim, 35, 45, _slot)
+_s1 = IR.band_snr_db(_hs, _pre, 0.0, 35, 45, noise_pow=_pn); _s2 = IR.band_snr_db(_hs, _pre, 0.0, 35, 45, noise_pow=_pn * 10 ** 0.6)
+check("band_snr_db with a given noise power: 6 dB more noise gives 6 dB less SNR", abs((_s1 - _s2) - 6.0) < 1e-6, f"({_s1:.2f}, {_s2:.2f})")
 finish("test_autocal_ir")

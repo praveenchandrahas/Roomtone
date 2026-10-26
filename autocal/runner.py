@@ -33,6 +33,7 @@ class RunConfig:
     sweep_s: float = 7.0
     tail_s: float = 2.0
     noise_s: float = 6.0
+    noise_ref_s: float = 20.0                # silence recorded before and after every position: the noise reference for the 40 Hz signal-to-noise (0 = use the sweep's own IR)
     target: str = "owner_hump"
     hump_db: float = 20.0
     dry: bool = False
@@ -216,6 +217,16 @@ class Run:
             time.sleep(POLL_S)
         self.status.update(prompt=None)
 
+    def noise_reference(self, k, when, base):
+        """Records `cfg.noise_ref_s` of silence (nothing is played) and returns it, or None when switched off. Used as the noise reference for the 40 Hz SNR."""
+        if not self.cfg.noise_ref_s or self.cfg.dry:
+            return None
+        self.st("sweeping", f"position {k + 1}: noise {when}", f"recording {self.cfg.noise_ref_s:g} s of silence ({when} the sweeps): stay quiet", base)
+        nf = self.be.record_noise(self.cfg.noise_ref_s, self.monitor(check_clipping=False))
+        if nf.aborted:
+            raise RunAborted(f"noise recording {when} position {k + 1}: {nf.aborted}")
+        return nf.x
+
     def measure_position(self, k, label, offset, weight, ref_pos=None):
         """Runs the main timeline at position k (0-based) and returns the PositionData, with the move check for k > 0."""
         total = len(self.positions)
@@ -227,12 +238,20 @@ class Run:
             for sl in tl.cues["slots"]:
                 if sl["name"] == "LFE":
                     sweeps.append({"t0": 1.0 + sl["t"], "T": self.cfg.sweep_s, "f0": sl["f0"], "f1": sl["f1"]})
+            before = self.noise_reference(k, "before", base)
             self.st("sweeping", f"position {k + 1}/{total}: {label}", "playing sync chirps and sweeps", base, position=k + 1, level_dbfs=self.sweep_level)
             mon = _StepMonitor(self.monitor(lfe_sweeps=sweeps, level_dbfs=self.sweep_level), self, tl, base, 0.7 / total, k + 1, total, label)
             cap = self.play(tl.render(), "main", mon, pre_s=1.0, post_s=1.0)
+            after = self.noise_reference(k, "after", base)
+            segs = [x for x in (before, after) if x is not None]
+            if len(segs) == 2:
+                lb, la = (SF.dbfs(np.sqrt(np.mean(x ** 2))) for x in segs)
+                self.say(f"position {k + 1}: noise before {lb:.1f} dBFS, after {la:.1f} dBFS ({self.cfg.noise_ref_s:g} s each)")
+                if abs(lb - la) > 6.0:
+                    self.say(f"  NOTE: the room noise changed by {abs(lb - la):.0f} dB during this position (something started or stopped): the 40 Hz readings are less certain")
             self.st("analysing", f"position {k + 1}/{total}: analysing", "deconvolving the sweeps", base + 0.7 / total * 0.9, position=k + 1)
             try:
-                pd = M.analyse_recording(cap.x, tl.cues, index=k + 1, label=label, offset_cm=offset, weight=weight, noise_floor_dbfs=self.floor)
+                pd = M.analyse_recording(cap.x, tl.cues, index=k + 1, label=label, offset_cm=offset, weight=weight, noise_floor_dbfs=self.floor, noise_segments=segs or None)
             except M.MeasurementError as e:
                 raise RunAborted(f"position {k + 1}: {e}", "error")
             if not self.cfg.dry and not self.be.simulated:
@@ -245,7 +264,7 @@ class Run:
             weak = [n for n in bass if pd.ch[n].snr40_db < M.SNR_FIT_MIN_40HZ_DB]
             if bass and len(weak) * 2 >= len(bass):
                 raise RunAborted(f"SNR at 40 Hz below {M.SNR_FIT_MIN_40HZ_DB:.0f} dB for {len(weak)} of {len(bass)} bass channels ("
-                                 + ", ".join(f"{n} {pd.ch[n].snr40_db:.0f} dB" for n in weak) + "): too quiet or too noisy for a trustworthy bass fit", "error")
+                                 + ", ".join(f"{n} {pd.ch[n].snr40_db:.0f} dB" + (f" (in-sweep estimate {pd.ch[n].snr40_slot_db:.0f})" if pd.ch[n].snr40_slot_db is not None and abs(pd.ch[n].snr40_slot_db - pd.ch[n].snr40_db) >= 3 else "") for n in weak) + "): too quiet or too noisy for a trustworthy bass fit", "error")
             if ref_pos is not None:
                 moved = max((abs(pd.ch[n].arrival_ms - ref_pos.ch[n].arrival_ms) for n in ("FR", "SL", "SR")
                              if n in pd.ch and n in ref_pos.ch and not pd.ch[n].dead), default=0.0)

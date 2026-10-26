@@ -35,7 +35,8 @@ class ChannelMeasure:
     level_db: float = None            # 500-2000 Hz band level (LFE: 40-100 Hz): transfer gain mic/DAC, dB
     level_mid_db: float = None        # 300-4000 Hz band level (heights trim)
     snr_db: float = None              # in the arrival band
-    snr40_db: float = None            # 35-45 Hz (None for heights, which start at 100 Hz)
+    snr40_db: float = None            # 35-45 Hz (None for heights, which start at 100 Hz); against the silent before/after recordings when given
+    snr40_slot_db: float = None       # the same, but with the noise taken from the sweep's own IR (one 180 ms window: scatters by several dB)
     pilot_dev_ms: float = None
     dead: bool = False
     ir_t_ms: np.ndarray = None
@@ -89,8 +90,12 @@ def downsample_ir(h, pre, t0_ms=-5.0, t1_ms=95.0, max_points=2000):
     return t, vals
 
 
-def analyse_recording(x_raw, cues, index=1, label="centre", offset_cm=(0.0, 0.0), weight=1.0, noise_floor_dbfs=None, apply_cal=True):
-    """Analyses one recording made from `cues` (a Timeline's cues). Returns a PositionData."""
+def analyse_recording(x_raw, cues, index=1, label="centre", offset_cm=(0.0, 0.0), weight=1.0, noise_floor_dbfs=None, apply_cal=True, noise_segments=None):
+    """Analyses one recording made from `cues` (a Timeline's cues). Returns a PositionData.
+
+    `noise_segments` (optional): mono recordings made with nothing playing (the runner records 20 s before and 20 s after each position). When given, the
+    40 Hz signal-to-noise (snr40_db, which the bass gate reads) is measured against the noise in those recordings instead of the single 180 ms
+    window of the sweep's own IR; the in-sweep value is kept as snr40_slot_db and the two are compared in the notes."""
     x = IR.apply_mic_cal(np.asarray(x_raw, float)) if apply_cal else np.asarray(x_raw, float)
     try:
         a, b, how = IR.placement(x, cues)
@@ -112,7 +117,14 @@ def analyse_recording(x_raw, cues, index=1, label="centre", offset_cm=(0.0, 0.0)
         f, H = IR.spectrum(h, pre, t_arr)
         cm = ChannelMeasure(name, t_arr_ms=t_arr, f=f, H=H)
         cm.snr_db = IR.band_snr_db(h, pre, t_arr, 30, 120) if name == "LFE" else IR.band_snr_db(h, pre, t_arr, 300, 4000)
-        cm.snr40_db = None if name in ("RL", "RR") else IR.band_snr_db(h, pre, t_arr, 35, 45)
+        if name in ("RL", "RR"):
+            cm.snr40_db = None
+        else:
+            cm.snr40_db = cm.snr40_slot_db = IR.band_snr_db(h, pre, t_arr, 35, 45)
+            if noise_segments:
+                pn = IR.noise_ir_power(noise_segments, stim, 35, 45, cues["slot_s"])
+                if pn is not None:
+                    cm.snr40_db = IR.band_snr_db(h, pre, t_arr, 35, 45, noise_pow=pn)
         cm.dead = cm.snr_db < DEAD_SNR_DB
         cm.level_db = IR.band_level_db(f, H, 40, 100) if name == "LFE" else IR.band_level_db(f, H, 500, 2000)
         cm.level_mid_db = IR.band_level_db(f, H, 300, 4000)

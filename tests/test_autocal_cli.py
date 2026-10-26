@@ -110,6 +110,13 @@ r = cli("run", "--simulate", "--dry", "--lfe-from", "10", "--runs-dir", RUNS)
 check("--lfe-from outside 25-60 Hz is refused", r.returncode == 2 and "between 25 and 60" in r.stdout)
 r = cli("bogus"); check("an unknown command is rejected", r.returncode == 2)
 
+
+# ---- noise reference before and after each position
+r = cli("run", "--simulate", "--runs-dir", RUNS, "--noise-ref", "10", *FAST)
+check("a simulated run records the noise reference before and after the position and says so", r.returncode == 0 and "noise before" in r.stdout and "10 s each" in r.stdout, r.stdout[-300:] + r.stderr[-200:])
+r = cli("run", "--simulate", "--runs-dir", RUNS, "--noise-ref", "0", *FAST)
+check("--noise-ref 0 switches it off (the old in-sweep estimate)", r.returncode == 0 and "noise before" not in r.stdout, r.stdout[-200:] + r.stderr[-200:])
+
 # ---- mic --spectrum report: known white noise + a modulated 50 Hz hum
 import numpy as np
 from autocal.cli import spectrum_report

@@ -45,7 +45,7 @@ def build_backend(a, sim_params=None):
 
 
 def cmd_run(a, check_only=False):
-    cfg = RN.RunConfig(mode=a.mode, runs_dir=_runs_dir(a), dry=a.dry, check_only=check_only, auto_continue=a.auto_continue,
+    cfg = RN.RunConfig(mode=a.mode, noise_ref_s=a.noise_ref, runs_dir=_runs_dir(a), dry=a.dry, check_only=check_only, auto_continue=a.auto_continue,
                        prompt_timeout_s=a.prompt_timeout, sweep_s=a.sweep_s, tail_s=a.tail_s, target=a.target, hump_db=a.hump_db,
                        allow_boost=a.allow_boost, interactive_stdin=sys.stdin.isatty())
     sim_params = {"scenario": a.scenario, "seed": a.seed, "noise_dbfs": a.sim_noise, "speed": a.speed, "faults": a.sim_fault,
@@ -189,6 +189,8 @@ def parser():
         s.add_argument("--simulate", action="store_true", help="use the simulated room (no audio, no hardware)")
         s.add_argument("--mode", choices=["single", "five"], default="single")
         s.add_argument("--dry", action="store_true", help="print the timeline and levels; play nothing")
+        s.add_argument("--noise-ref", type=float, default=20.0, metavar="SECONDS",
+                       help="silence recorded before and after every position, the noise reference for the 40 Hz signal-to-noise (default 20; 0 = judge it from the sweep's own IR)")
         s.add_argument("--seed", type=int, default=0)
         s.add_argument("--scenario", default="default", help="simulation only: default clean flipped dead null noisy")
         s.add_argument("--auto-continue", action="store_true", help="answer the 'move the mic' prompts automatically (simulation and tests)")

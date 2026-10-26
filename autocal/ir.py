@@ -227,11 +227,13 @@ def smooth_db(f, H, grid, width_oct):
     return out
 
 
-def band_snr_db(h, pre, t_arr_ms, lo, hi, n=1 << 16):
+def band_snr_db(h, pre, t_arr_ms, lo, hi, n=1 << 16, noise_pow=None):
     """Signal-to-noise ratio of one deconvolved slot in [lo, hi] Hz.
 
-    Signal: the IR from arrival-2 ms for 180 ms. Noise: the IR region BEFORE the zero-delay point (0 .. pre-20 ms, also 180 ms): there a
-    linear system has no response, so it holds only noise (the sweep's harmonic images fall further back, outside this window)."""
+    Signal: the IR from arrival-2 ms for 180 ms. Noise: by default the IR region BEFORE the zero-delay point (0 .. pre-20 ms, also 180 ms): there a
+    linear system has no response, so it holds only noise (the sweep's harmonic images fall further back, outside this window). That is a single 180 ms
+    sample: in a 10 Hz band it holds about two independent noise samples, so one reading scatters by several dB. `noise_pow`, when given (from
+    `noise_ir_power`, measured on separate silent recordings), replaces it and is stable to well under 1 dB."""
     c = int(pre * FS); L = c - int(0.02 * FS)
     k0 = c + int((t_arr_ms - 2.0) / 1000 * FS)
     sig = np.zeros(n); noi = np.zeros(n)
@@ -241,5 +243,33 @@ def band_snr_db(h, pre, t_arr_ms, lo, hi, n=1 << 16):
     q = h[:L].copy(); q[-nt:] *= 0.5 + 0.5 * np.cos(np.pi * np.arange(nt) / nt)
     noi[:len(q)] = q
     f = np.fft.rfftfreq(n, 1 / FS); m = (f >= lo) & (f <= hi)
-    ps = np.mean(np.abs(rfft(sig))[m] ** 2); pn = np.mean(np.abs(rfft(noi))[m] ** 2)
+    ps = np.mean(np.abs(rfft(sig))[m] ** 2)
+    pn = np.mean(np.abs(rfft(noi))[m] ** 2) if noise_pow is None else noise_pow
     return float(10 * np.log10((ps + 1e-30) / (pn + 1e-30)))
+
+
+def noise_ir_power(segments, stim, lo, hi, slot_s, n=1 << 16):
+    """Noise power in [lo, hi] Hz of the deconvolved IR, from silent recordings, using exactly the processing `deconv` applies to a slot with waveform
+    `stim`. `segments` is a list of mono arrays recorded with nothing playing (for example 20 s before and 20 s after a position). Each is cut into
+    pieces of one slot length; every piece is deconvolved and its noise-only IR is measured in 180 ms windows over the lags where the whole stimulus
+    still overlaps the piece, then all windows are averaged (power). Returns the mean power in the same units as the `ps` of band_snr_db, or None if
+    the recordings are too short for one piece."""
+    N = 1 << 19; pre = 0.2
+    seglen = int((slot_s + pre) * FS); L = int((pre - 0.02) * FS); nt = int(0.06 * FS)
+    taper = np.ones(L); taper[-nt:] = 0.5 + 0.5 * np.cos(np.pi * np.arange(nt) / nt)
+    xs = np.zeros(N); j = int(pre * FS); xs[j:j + len(stim)] = stim
+    X = rfft(xs); fN = np.fft.rfftfreq(N, 1 / FS); P = np.abs(X) ** 2
+    band = (fN >= 12) & (fN <= 21000)
+    inv = np.where(band, np.conj(X) / (P + 1e-5 * P[band].max()), 0)
+    f = np.fft.rfftfreq(n, 1 / FS); m = (f >= lo) & (f <= hi)
+    last = int((slot_s - len(stim) / FS) * FS) + j          # last index with the whole stimulus still inside the piece
+    pw = []
+    for seg in segments:
+        for a in range(0, len(seg) - seglen + 1, seglen):
+            y = np.zeros(N); y[:seglen] = seg[a:a + seglen]
+            h = np.roll(irfft(rfft(y) * inv, N), j)
+            k = 0
+            while k + L <= last:
+                z = np.zeros(n); z[:L] = h[k:k + L] * taper
+                pw.append(np.mean(np.abs(rfft(z))[m] ** 2)); k += L
+    return float(np.mean(pw)) if pw else None

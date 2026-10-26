@@ -18,7 +18,7 @@ Tests: `bash tests/run.sh` (analysis test takes about 2 minutes). Test env overr
 **Only in simulation** (a modelled room with a Z906-like satellite/sub path, noise, clock drift, faults): ir/deconvolution golden tests against the existing analysers, stimulus levels and the -20 dBFS cap, ground-truth recovery (delays within 0.15 ms, trims within 1 dB), flipped-speaker detection, null not boosted, dead channel, prediction vs re-measurement, abort paths (clip, abort file within 250 ms, fake pw-play), apply/keep/rollback and trial revert on temp files, schema validity.
 
 **Only the owner can validate at the rig:**
-- real SNR, mic clipping margins, and every threshold (SNR gate 25 dB at 40 Hz, harmonic limit -20 dBc, polarity margin, null masking, 3 dB target rms): these are reasoned guesses, not calibrated
+- real SNR, mic clipping margins, and every threshold (bass gate: the sub (LFE) at 40 Hz below 15 dB, or half or more of the bass channels below 20 dB, harmonic limit -20 dBc, polarity margin, null masking, 3 dB target rms): these are reasoned guesses, not calibrated
 - `pw-record` stdout format (PipewireBackend is UNTESTED ON HARDWARE). Playback now uses the method of `scripts/play-through-camilla.sh` (`pw-play` with `node.autoconnect=false`, then `pw-link` each port to `camilladsp-capture:input_N`), which is what the earlier measurements used; the older `--target camilladsp-capture` path remains as `AUTOCAL_PLAY_METHOD=target`. The autocal code around it is still unrun on the rig
 - trial/rollback across a live CamillaDSP restart and relink (the real-rig path in install.py is untested)
 - mic calibration use, and above all whether the result sounds right
@@ -38,3 +38,10 @@ Tests: `bash tests/run.sh` (analysis test takes about 2 minutes). Test env overr
 ## Five-position mode
 
 Five mic positions (centre plus four offsets); the program prompts "move the mic" between them, detects a mic that did not move (arrival change < 0.15 ms) and asks again. Delays/trims come from the position means. Bass EQ is a consensus cut: below 100 Hz a position-weighted power average (centre weight 2), above 100 Hz the 25th percentile, cross-faded 85-115 Hz; nulls at any position are masked; cuts only (<= 8 filters, <= -15 dB, Q <= 5/6). A leave-one-position-out check steps down to fewer/softer filters if the held-out position gets worse. It aims at a smoother seat area, not a perfect single point, so predicted improvement at the centre is smaller than in single mode.
+
+## Noise reference (since 2026-10-26)
+
+The bass gate compares the 35-45 Hz signal of each channel with the room noise. Taking that noise from the sweep's own impulse response (one 180 ms window, about two independent samples in a 10 Hz band) scattered by about 4 dB, with single readings up to 15 dB apart, and it stopped viable runs. Each position now records
+`--noise-ref` seconds of silence before and after the sweeps (default 20 s each, so about 40 s more per position; `0` restores the old estimate) and measures the noise by passing those recordings through exactly the same deconvolution (`ir.noise_ir_power`); that estimate scatters by about 0.5 dB.
+A steady hum (a transformer, a fan) is part of the noise reference and counted as noise, as it should be. The run prints the noise level before and after and notes it if it changed by more than 6 dB during a position. A burst of noise that happens only during one sweep is not in the before/after reference; `snr40_slot_db` keeps the in-sweep value and the STOPPED message shows both when they differ by 3 dB or more.
+Checked on synthetic noise and the simulated room only; not yet on a real run.
