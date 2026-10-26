@@ -28,7 +28,7 @@ Tests: `bash tests/run.sh` (analysis test takes about 2 minutes). Test env overr
 
 - Arrival times are relative to FL (no absolute timing reference). LFE timing uses 40-120 Hz and is rough; LFE and dead channels follow FL's change. The sub knob is untouched.
 - Trims are <= 0 against the quietest raw bed speaker. Changes under 1 dB / 0.15 ms are ignored. Boosts only with --allow-boost.
-- Level: ramp from -50 dBFS up to a hard cap of -20 dBFS, stopping about 30 dB over the noise floor; sweeps run at stop + 12 dB (never above the cap, and reduced if the mic peak would exceed -10 dBFS). Heights play from 100 Hz.
+- Level: ramp from -50 dBFS up to a hard cap of -20 dBFS. Each burst is found by cross-correlation (a matched filter, because room noise swings by 20 dB or more and a plain level cannot see a faint burst); the ramp stops when the correlation reaches 40 dB over noise alone, and the run stops with "too quiet" when the sweeps would reach less than 30 dB peak-to-noise (expected = correlation + 10 log10(sweep seconds) + sweep boost; first rig: 37 dB at the cap, about 45 expected). Sweeps run at stop + 12 dB (never above the cap, and reduced if the mic peak would exceed -10 dBFS). Heights play from 100 Hz.
 - Safety: mic peak above -6 dBFS, clipped samples, or 2nd harmonic above -20 dBc abort; the abort file is polled every 50 ms.
 - Deviation from the plan: not one pw-play per sweep. One continuous file per position is played, so the sync chirps can place every sweep and fit clock drift.
 - Stubs: automatic repeat of a sweep when SNR < 30 dB (only a warning/abort). Channel ID catches dead or wrong-mic channels; swapped speakers are only visible by comparing runs.

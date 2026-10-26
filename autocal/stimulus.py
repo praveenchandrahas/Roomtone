@@ -19,7 +19,10 @@ BED = ("FL", "FR", "FC", "SL", "SR")
 CAP_DBFS = -20.0                  # hard cap on the generator PEAK level
 RAMP_START_DBFS = -50.0
 RAMP_STEP_DB = 6.0
-RAMP_SNR_TARGET_DB = 30.0         # ramp stops when the mic is this far above its noise floor
+RAMP_SNR_TARGET_DB = 30.0         # (raw-level criterion of the first version; the ramp now uses the correlation criteria below)
+RAMP_COH_TARGET_DB = 40.0         # ramp stops when the burst's correlation peak is this far above the correlation of noise alone
+EXPECTED_IR_OK_DB = 40.0          # expected peak-to-noise of the sweeps' impulse responses: at or above this, no remark
+EXPECTED_IR_MIN_DB = 30.0         # below this the run stops ("too quiet"); in between it warns
 SWEEP_BOOST_DB = 12.0             # main sweeps run this far above the ramp's stopping level (a sweep concentrates energy), capped at CAP
 LOW_STEP_DB, LOW_STEP_F = -12.0, (30.0, 35.0)
 
@@ -184,6 +187,24 @@ def burst_report(mic, burst, floor_dbfs, noise=None, fs=FS, detect_db=18.0):
     p_win = float(np.mean(mic[k:k + n] ** 2)); p_floor = 10 ** (floor_dbfs / 10)
     level = float(10 * np.log10(p_win - p_floor)) if (detected and p_win > p_floor) else float(floor_dbfs)     # below the floor: found, but not measurable
     return {"detected": bool(detected), "coherent_snr_db": coh, "lag_s": k / fs, "level_dbfs": level, "over_floor_db": float(level - floor_dbfs)}
+
+
+def ramp_decision_coh(steps, target_db=RAMP_COH_TARGET_DB):
+    """steps: list of (generator level dBFS, correlation SNR dB or 0 when the burst was not found). Returns (stop_level, coherent_snr_at_stop, reached).
+
+    Stops at the first level whose correlation reaches target_db; if none does, the highest level tried (which is at most the cap)."""
+    for lv, c in steps:
+        if c >= target_db:
+            return lv, c, True
+    lv, c = steps[-1]
+    return lv, c, False
+
+
+def expected_ir_snr_db(coh_db, sweep_s, sweep_level_dbfs, ramp_level_dbfs):
+    """Peak-to-noise of the sweeps' deconvolved impulse response, from the ramp burst's correlation SNR: the sweep is `sweep_s` long instead of
+    1 s (+10 log10) and plays at sweep_level instead of ramp_level (+ the difference). Conservative: a sweep has a lower crest factor than the pink
+    burst (more energy at the same peak level), which is ignored here."""
+    return float(coh_db + 10 * np.log10(max(sweep_s, 1e-3)) + (sweep_level_dbfs - ramp_level_dbfs))
 
 
 def ramp_decision(steps, floor_dbfs, target_db=RAMP_SNR_TARGET_DB, cap=CAP_DBFS):

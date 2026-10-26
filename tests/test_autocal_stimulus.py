@@ -133,4 +133,14 @@ for _ in range(40):
     _fa += S.burst_report(_noise(2.2, -55.0), _burst, _floor, noise=_nf)["detected"]
 check("burst_report: noise alone is not detected (0 false alarms in 40 recordings)", _fa == 0, f"({_fa})")
 
+
+# ---- ramp decision by correlation, with the first real rig's numbers (24, 31, 37 dB at -32, -26, -20 dBFS; nothing found below) -----------------
+_steps = [(-50.0, 0.0), (-44.0, 0.0), (-38.0, 0.0), (-32.0, 24.0), (-26.0, 31.0), (-20.0, 37.0)]
+_lv, _c, _reached = S.ramp_decision_coh(_steps)
+check("ramp_decision_coh: the first rig never reaches 40 dB, so the ramp ends at the cap with 37 dB", _lv == -20.0 and _c == 37.0 and _reached is False)
+_e = S.expected_ir_snr_db(37.0, 7.0, -20.0, -20.0)
+check("expected_ir_snr_db: 37 dB at the cap with 7 s sweeps -> about 45 dB peak-to-noise (above the 40 'comfortable' line)", abs(_e - (37 + 10 * _np.log10(7.0))) < 1e-9 and _e >= S.EXPECTED_IR_OK_DB, f"({_e:.1f})")
+check("expected_ir_snr_db: a boost from the ramp level to the sweep level adds the same number of dB", abs(S.expected_ir_snr_db(40.0, 7.0, -26.0, -38.0) - S.expected_ir_snr_db(40.0, 7.0, -38.0, -38.0) - 12.0) < 1e-9)
+check("ramp_decision_coh stops at the first level that reaches 40 dB", S.ramp_decision_coh([(-50.0, 31.0), (-44.0, 43.0), (-38.0, 50.0)]) == (-44.0, 43.0, True))
+
 finish("test_autocal_stimulus")

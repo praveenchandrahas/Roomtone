@@ -141,39 +141,44 @@ class Run:
             self.st("ramp", "level ramp", f"FL burst at {lv:.0f} dBFS", level_dbfs=lv)
             cap = self.play(x, "ramp", self.monitor(), pre_s=0.3, post_s=0.3)
             rep = ST.burst_report(cap.x, burst, self.floor, noise=self.noise_x)
-            m = rep["level_dbfs"]                      # the burst's own level at the mic (the floor itself when the burst is not found)
-            steps.append((lv, m)); peaks.append(SF.dbfs(np.max(np.abs(cap.x)))); reports.append(rep)
-            found = (f"burst found at {rep['lag_s'] - 0.3:+.2f} s (correlation {rep['coherent_snr_db']:.0f} dB)" if rep["detected"]
-                     else f"burst NOT found (correlation {rep['coherent_snr_db']:.0f} dB; noise alone gives about 13)")
-            self.say(f"  ramp {lv:6.1f} dBFS -> {found}; burst at the mic {m:6.1f} dBFS rms, {rep['over_floor_db']:+.1f} dB over the noise floor")
+            c = rep["coherent_snr_db"] if rep["detected"] else 0.0
+            steps.append((lv, c)); peaks.append(SF.dbfs(np.max(np.abs(cap.x)))); reports.append(rep)
+            found = (f"burst found at +{rep['lag_s'] - 0.3:.2f} s, correlation {rep['coherent_snr_db']:.0f} dB" if rep["detected"]
+                     else f"burst NOT found (correlation {rep['coherent_snr_db']:.0f} dB; noise alone gives about 13, finding needs 18)")
+            self.say(f"  ramp {lv:6.1f} dBFS -> {found}")
             try:                                   # keep the mic recording of every step: it is how a silent or misaligned burst is diagnosed afterwards
                 IR.write_wav24(os.path.join(self.dir, f"ramp_{lv:+05.1f}dBFS.wav".replace("+", "p").replace("-", "m")), cap.x)
             except OSError:
                 pass
-            if rep["detected"] and m - self.floor >= ST.RAMP_SNR_TARGET_DB:
+            if c >= ST.RAMP_COH_TARGET_DB:
                 break
-        lv, snr, reached = ST.ramp_decision(steps, self.floor)
+        lv, coh, reached = ST.ramp_decision_coh(steps)
+        snr = coh
         self.ramp_steps = steps
         self.ramp_level = lv
         stop_peak = peaks[[a for a, _ in steps].index(lv)]
         self.sweep_level = self.cfg.fixed_level_db if self.cfg.fixed_level_db is not None else ST.sweep_level_from_ramp(lv, stop_peak)
         top = reports[-1]
+        exp_ir = ST.expected_ir_snr_db(coh, self.cfg.sweep_s, self.sweep_level, lv) if reports[[a for a, _ in steps].index(lv)]["detected"] else 0.0
         self.details["ramp"] = {"steps": [[a, round(b, 1)] for a, b in steps], "stop_level_dbfs": lv, "snr_db": round(snr, 1), "reached_target": reached,
                                 "sweep_level_dbfs": self.sweep_level, "mic_peak_at_stop_dbfs": round(stop_peak, 1),
-                                "burst_found": [bool(r["detected"]) for r in reports], "correlation_db": [round(r["coherent_snr_db"], 1) for r in reports]}
+                                "burst_found": [bool(r["detected"]) for r in reports], "correlation_db": [round(r["coherent_snr_db"], 1) for r in reports],
+                                "expected_ir_snr_db": round(exp_ir, 1)}
         if not reached:
-            self.details["ramp"]["note"] = f"never reached {ST.RAMP_SNR_TARGET_DB:.0f} dB over the floor up to the {ST.CAP_DBFS:.0f} dBFS cap"
+            self.details["ramp"]["note"] = f"correlation never reached {ST.RAMP_COH_TARGET_DB:.0f} dB up to the {ST.CAP_DBFS:.0f} dBFS cap"
             if not top["detected"]:
                 raise RunAborted(f"the microphone did not pick up the bursts at all, not even by correlation ({top['coherent_snr_db']:.0f} dB; noise alone gives about 13) "
                                  f"up to the {ST.CAP_DBFS:.0f} dBFS cap. Either the bursts are not reaching the speakers (were they audible?) or the mic does not hear them "
                                  f"(muted, wrong input, level). Run 'python3 -m autocal mic' and tap the mic; the ramp recordings are in the run folder", "error")
-            if snr < 3:
-                raise RunAborted(f"the bursts are found but only {snr:.0f} dB over the mic's noise floor at the {ST.CAP_DBFS:.0f} dBFS cap: too quiet to measure. "
-                                 f"Raise the Z906 volume a notch (or reduce the room noise, e.g. the laptop fan) and retry", "error")
-            if snr < 10:
-                self.say(f"WARNING: only {snr:.0f} dB over the noise floor at the cap: the measurement will be noisy (the analysis has its own SNR gates and says so)")
-                self.details["ramp"]["warning"] = f"only {snr:.0f} dB over the noise floor at the cap"
-        self.say(f"sweep level {self.sweep_level:.1f} dBFS (ramp stopped at {lv:.0f} dBFS, {snr:.0f} dB over the floor)")
+            if exp_ir < ST.EXPECTED_IR_MIN_DB:
+                raise RunAborted(f"too quiet to measure: at the {ST.CAP_DBFS:.0f} dBFS cap the burst correlates at {coh:.0f} dB, so the sweeps would reach only about "
+                                 f"{exp_ir:.0f} dB peak-to-noise (needs {ST.EXPECTED_IR_MIN_DB:.0f}). Raise the Z906 volume a notch (or reduce the room noise, e.g. the laptop fan) and retry", "error")
+            if exp_ir < ST.EXPECTED_IR_OK_DB:
+                self.say(f"WARNING: at the cap the sweeps should reach about {exp_ir:.0f} dB peak-to-noise (comfortable is {ST.EXPECTED_IR_OK_DB:.0f}+): expect noisy bass")
+                self.details["ramp"]["warning"] = f"expected IR peak-to-noise {exp_ir:.0f} dB"
+            else:
+                self.say(f"the sweeps should reach about {exp_ir:.0f} dB peak-to-noise at the cap: enough")
+        self.say(f"sweep level {self.sweep_level:.1f} dBFS (ramp stopped at {lv:.0f} dBFS, burst correlation {coh:.0f} dB; expected sweep peak-to-noise about {exp_ir:.0f} dB)")
         self.st("ramp", "level ramp", f"sweep level {self.sweep_level:.0f} dBFS", 0.12, level_dbfs=self.sweep_level)
 
     def channel_id(self):
