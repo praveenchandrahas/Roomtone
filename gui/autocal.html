@@ -81,6 +81,23 @@ td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); 
 th:first-child, td:first-child { text-align: left; font-weight: 600; }
 .scroll { overflow-x: auto; }
 code.cmd { display: block; margin-top: 10px; padding: 8px 12px; border-radius: 8px; background: rgba(127,127,140,.12); font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; white-space: pre; }
+.seg { display: flex; flex-wrap: wrap; gap: 4px; padding: 3px; border-radius: 12px; background: rgba(127,127,140,.1); border: 1px solid var(--line); width: fit-content; max-width: 100%; }
+.seg button { background: transparent; color: var(--muted); border: 0; border-radius: 9px; padding: 7px 14px; font: inherit; cursor: pointer; min-height: 34px; transition: background .15s, color .15s; }
+.seg button:hover:not(:disabled) { color: var(--text); background: rgba(127,127,140,.14); }
+.seg button:disabled { opacity: .45; cursor: default; }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+label.lbl.row { display: block; margin: 12px 0 6px; }
+pre.log { margin: 0; padding: 10px 12px; max-height: 220px; overflow: auto; border-radius: 10px; background: rgba(127,127,140,.12); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+.trial { border-color: color-mix(in srgb, var(--warn) 60%, transparent); }
+.trial .big { font-size: 18px; }
+dialog { background: var(--panel-solid); color: var(--text); border: 1px solid var(--line-strong); border-radius: 16px; max-width: 460px; width: calc(100% - 32px); padding: 20px; box-shadow: 0 30px 80px -20px rgba(0,0,0,.7); }
+dialog::backdrop { background: rgba(0,0,0,.55); backdrop-filter: blur(3px); }
+dialog h3 { margin: 0 0 8px; font-size: 16px; }
+dialog p { margin: 0 0 10px; color: var(--muted); }
+dialog ul { margin: 0 0 10px; padding-left: 18px; max-height: 240px; overflow: auto; }
+dialog li { margin: 2px 0; }
+dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; margin: 16px 0 0; }
+button.b.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
 footer { margin-top: 18px; text-align: center; }
 </style>
 </head>
@@ -93,6 +110,11 @@ footer { margin-top: 18px; text-align: center; }
   </header>
   <div class="layout">
     <div class="stack">
+      <section class="card trial" id="trial" hidden aria-labelledby="h-trial"><h2 id="h-trial">Trial of an applied profile</h2>
+        <div class="big" id="trial-text"></div>
+        <div class="msg">The new profile goes back to the old one by itself when the time runs out, unless you keep it.</div>
+        <div class="btns" style="margin-top:0"><button type="button" class="b go" id="btn-keep">Keep it</button><button type="button" class="b stop" id="btn-rollback">Roll back now</button></div>
+        <div class="small" id="trial-msg" role="status" aria-live="polite" style="margin-top:8px"></div></section>
       <section class="card" aria-labelledby="h-cur"><h2 id="h-cur">Run <span class="tag" id="cur-id"></span></h2>
         <div id="cur-empty" class="msg" hidden></div>
         <div id="cur" hidden>
@@ -107,14 +129,25 @@ footer { margin-top: 18px; text-align: center; }
           <div class="small" id="ctl-msg" role="status" aria-live="polite" style="margin-top:8px"></div>
         </div>
       </section>
+      <section class="card" id="logcard" hidden aria-labelledby="h-log"><h2 id="h-log">Console output <span class="tag">of the run started here</span></h2><pre class="log" id="log" tabindex="0"></pre></section>
       <section class="card" aria-labelledby="h-res"><h2 id="h-res">Result <span class="tag" id="res-id"></span></h2>
         <div id="res"><div class="msg">Pick a run from the list.</div></div></section>
     </div>
+    <div class="stack">
+    <section class="card" aria-labelledby="h-new"><h2 id="h-new">New measurement</h2>
+      <label class="lbl row" id="l-real">Plays sound (asks first)</label>
+      <div class="seg" id="start-real" role="group" aria-labelledby="l-real">
+        <button type="button" data-preset="check">Check only</button><button type="button" data-preset="single">Single position</button><button type="button" data-preset="five">Five positions</button></div>
+      <label class="lbl row" id="l-sim">Practice: simulated room, no sound</label>
+      <div class="seg" id="start-sim" role="group" aria-labelledby="l-sim"><button type="button" data-preset="sim-single">Single</button><button type="button" data-preset="sim-five">Five</button></div>
+      <div class="small" id="start-msg" role="status" aria-live="polite" style="margin-top:10px"></div></section>
     <section class="card" aria-labelledby="h-runs"><h2 id="h-runs">Runs</h2><ul class="runs" id="runs"></ul>
       <div class="small" id="runs-dir" style="margin-top:10px"></div></section>
+    </div>
   </div>
-  <footer class="small">Local only (127.0.0.1). This page watches autocal and can press Continue or stop a run; it cannot start a run or apply anything. Those stay in the terminal: <code>autocal run</code>, <code>autocal apply</code>.</footer>
+  <footer class="small">Local only (127.0.0.1). This page runs the same <code>autocal</code> commands you would type, from a fixed list, one at a time. The limits (the -20 dBFS level cap and the live safety monitor) are enforced inside autocal and cannot be changed from here. Starting a run that plays sound and applying a proposal both ask first, and Stop always works.</footer>
 </main>
+<dialog id="dlg"><form method="dialog"><h3 id="dlg-title"></h3><div id="dlg-body"></div><menu><button class="b" value="cancel">Cancel</button><button class="b go" value="ok" id="dlg-ok">Continue</button></menu></form></dialog>
 <script>
 "use strict";
 const TOKEN = document.querySelector('meta[name="theater-token"]').content;
@@ -145,6 +178,59 @@ async function control(action) {
   msg.textContent = j.ok ? (action === "abort" ? "Stop requested; playback stops within a fraction of a second." : "Continuing.") : ("Not done: " + (j.error || code));
   tick();
 }
+function confirmDialog(title, paras, items, okText, danger, after) {
+  const body = $("dlg-body"); body.replaceChildren();
+  for (const p of paras || []) body.append(el("p", p));
+  if (items && items.length) { const ul = el("ul"); for (const i of items) ul.append(el("li", i)); body.append(ul); }
+  for (const p of after || []) body.append(el("p", p));
+  $("dlg-title").textContent = title; const ok = $("dlg-ok"); ok.textContent = okText || "Continue"; ok.className = "b " + (danger ? "danger" : "go");
+  const dlg = $("dlg");
+  return new Promise(res => { dlg.addEventListener("close", () => res(dlg.returnValue === "ok"), { once: true }); dlg.returnValue = "cancel"; dlg.showModal(); });
+}
+async function postTo(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Theater-Token": TOKEN }, body: JSON.stringify(body) });
+  return [r.status, await r.json().catch(() => ({}))];
+}
+async function startRun(preset) {
+  const msg = $("start-msg"); msg.textContent = "Starting…";
+  let body = { preset }, [code, j] = await postTo("/v1/autocal/start", body);
+  if (code === 409 && j.error === "confirm") {
+    if (!await confirmDialog("Start a measurement?", [j.message + "."], null, "Start", false)) { msg.textContent = "Cancelled."; return; }
+    body.confirm = true; [code, j] = await postTo("/v1/autocal/start", body);
+  }
+  msg.textContent = j.ok ? "Started. The first step checks the microphone and room noise; its result shows under Console output." : ("Not started: " + (j.error || code));
+  selected = j.id || selected; shownDetail = null; tick();
+}
+for (const b of document.querySelectorAll("[data-preset]")) b.addEventListener("click", () => startRun(b.dataset.preset));
+async function applyRun(rid) {
+  const out = $("apply-msg"); out.textContent = "Checking what would change…";
+  let pv = await (await fetch("/v1/autocal/preview?id=" + encodeURIComponent(rid))).json().catch(() => ({}));
+  if (!pv.can_apply) { out.textContent = "Cannot apply: " + (pv.why_not || pv.error || "unknown"); return; }
+  const items = (pv.changes || []).map(c => `${c.what}: ${c.from} → ${c.to}`);
+  const paras = [`Run ${rid}: verdict ${pv.verdict}. ${pv.summary || ""}`].concat(items.length ? ["This changes:"] : ["No setting differs from the room the run started from."]);
+  const after = []; if ((pv.warnings || []).length) after.push("Warnings: " + pv.warnings.join(" "));
+  after.push(pv.trial + " A backup of the current profile is made first.");
+  if (!await confirmDialog("Apply this proposal?", paras, items, "Apply with trial", false, after)) { out.textContent = "Not applied."; return; }
+  let body = { run: rid, confirm: true }, [code, j] = await postTo("/v1/autocal/apply", body);
+  if (code === 409 && j.error === "force") {
+    if (!await confirmDialog("Verdict FAIL: force it?", [j.message, "This is the same as autocal apply --force. Only do this if you know why the run failed."], null, "Apply anyway (force)", true)) { out.textContent = "Not applied."; return; }
+    body.force = true; [code, j] = await postTo("/v1/autocal/apply", body);
+  }
+  out.textContent = (j.ok ? "Applied; the trial is running. " : "Not applied. ") + (j.error || "") + (j.output ? "\n" + j.output : ""); out.style.whiteSpace = "pre-wrap";
+  tick();
+}
+async function trial(action) {
+  const out = $("trial-msg");
+  let body = { action }, [code, j] = await postTo("/v1/autocal/trial", body);
+  if (code === 409 && j.error === "confirm") {
+    if (!await confirmDialog("Roll back?", [j.message], null, "Roll back", false)) return;
+    body.confirm = true; [code, j] = await postTo("/v1/autocal/trial", body);
+  }
+  out.textContent = (j.ok ? (action === "keep" ? "Kept. " : "Rolled back. ") : "Failed: ") + (j.error || "") + (j.output ? j.output.trim().split("\n").slice(-2).join(" ") : "");
+  tick();
+}
+$("btn-keep").addEventListener("click", () => trial("keep"));
+$("btn-rollback").addEventListener("click", () => trial("rollback"));
 $("btn-continue").addEventListener("click", () => control("continue"));
 $("btn-abort").addEventListener("click", () => control("abort"));
 
@@ -207,13 +293,32 @@ function renderDetail(d) {
       el("td", num(row.snr_db, 0)), el("td", (row.notes || []).join("; ") || "–")); tr.lastChild.style.textAlign = "left"; t.append(tr);
   }
   wrap.append(t); box.append(wrap);
-  const cm = r.commands || {};
-  if (cm.apply) { box.append(el("div", "To use it, type this in the terminal (this page does not apply anything):", "small")); box.lastChild.style.marginTop = "12px"; box.append(el("code", cm.apply, "cmd")); }
+  const cmd = r.commands || {}, btns = el("div", undefined, "btns"), ab = el("button", "Review and apply…", "b go");
+  ab.type = "button"; ab.id = "btn-apply"; ab.dataset.sim = r.simulated ? "1" : ""; ab.disabled = true;
+  ab.addEventListener("click", () => applyRun(selected)); btns.append(ab); box.append(btns);
+  box.append(el("div", r.simulated ? "Simulated runs are never applied to the real system." : "You see exactly what changes before anything is applied.", "small"));
+  const am = el("div", undefined, "small"); am.id = "apply-msg"; am.setAttribute("role", "status"); am.setAttribute("aria-live", "polite"); am.style.marginTop = "6px"; box.append(am);
+  if (cmd.apply) { box.append(el("div", "Or type this in a terminal:", "small")); box.lastChild.style.marginTop = "12px"; box.append(el("code", cmd.apply, "cmd")); }
 }
 
 async function loadDetail(force) {
   if (!selected) return renderDetail(null);
-  try { const d = await (await fetch("/v1/autocal/run?id=" + encodeURIComponent(selected))).json(); shownDetail = selected + ":" + (d.has_results ? "r" : "n"); renderDetail(d); } catch (e) { renderDetail(null); }
+  try { const d = await (await fetch("/v1/autocal/run?id=" + encodeURIComponent(selected))).json(); shownDetail = selected + ":" + (d.has_results ? "r" : "n"); renderDetail(d); if (ov) renderExtras(ov); } catch (e) { renderDetail(null); }
+}
+
+function renderExtras(o) {
+  const t = o.trial; $("trial").hidden = !t;
+  if (t) $("trial-text").textContent = (t.run ? `Run ${t.run}: ` : "") + `reverts in ${Math.max(0, Math.round(t.remaining_s))} s`;
+  const lg = o.log, has = !!(lg && lg.length); $("logcard").hidden = !has;
+  if (has) { const pre = $("log"), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8; pre.textContent = lg.join("\n"); if (atEnd) pre.scrollTop = pre.scrollHeight; }
+  const c = o.current, running = !!(c && ACTIVE.includes(c.state) && !c.stale) || !!(o.child && o.child.alive), busy = running || !!t || !o.ready;
+  for (const b of document.querySelectorAll("[data-preset]")) b.disabled = busy;
+  const m = $("start-msg");
+  if (!o.ready) m.textContent = "autocal was not found next to the runs folder: re-run gui/install-ctld.sh from your checkout.";
+  else if (t) m.textContent = "A trial is running: keep it or roll back before measuring again.";
+  else if (running) m.textContent = "A run is in progress.";
+  else if (/^(A run is in progress|A trial is running|autocal was not found)/.test(m.textContent)) m.textContent = "";
+  const ab = $("btn-apply"); if (ab) ab.disabled = !!ab.dataset.sim || running || !!t;
 }
 
 async function tick() {
@@ -222,9 +327,9 @@ async function tick() {
   try {
     ov = await (await fetch("/v1/autocal")).json();
     $("runs-dir").textContent = ov.runs_dir ? "Runs folder: " + ov.runs_dir : (ov.hint || "");
-    const c = ov.current; fast = !!(c && ACTIVE.includes(c.state) && !c.stale);
+    const c = ov.current; fast = !!((c && ACTIVE.includes(c.state) && !c.stale) || ov.trial);
     if (selected === null && ov.runs.length) { selected = ov.runs[0].id; shownDetail = null; }
-    renderCurrent(c); renderRuns(ov.runs);
+    renderCurrent(c); renderRuns(ov.runs); renderExtras(ov);
     const sel = ov.runs.find(r => r.id === selected), want = selected && sel ? selected + ":" + (sel.verdict ? "r" : "n") : null;
     if (want !== shownDetail) loadDetail();
   } catch (e) { $("state-pill").replaceChildren(pill("Disconnected", "bad")); }

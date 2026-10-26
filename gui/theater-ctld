@@ -11,11 +11,15 @@ The router stays the only thing that changes the audio path; if this daemon dies
 
 Safety: bound to 127.0.0.1 only (no LAN option). Every request must carry a Host header of 127.0.0.1:PORT or localhost:PORT (DNS rebinding),
 a cross-origin Origin is refused, and POST needs the token (a random string kept in a 0600 file, handed only to the page this daemon serves).
-Autocal runs are shown from the run folders (read-only); the page's only writes are the two control files autocal itself polls
-(control/continue-<prompt id>, control/abort) for a run that is active and has updated in the last 60 s. It never starts a run or applies anything.
+Autocal (/autocal): runs are shown from the run folders. The page can also START a run, press Continue / Stop, and APPLY a finished run's proposal, always by
+running `python3 -m autocal ...` as a subprocess from a FIXED argv table (no shell, no free-form options; the only variable parts are a run id that matched
+^[0-9]{8}-[0-9]{6}$ and a folder this daemon computed). One run at a time; no new run while a trial of an applied profile is pending; playback needs "confirm";
+apply needs "confirm" and, for a FAIL verdict, "force" exactly like `autocal apply --force`; simulated runs are never applied (autocal refuses too).
+The safety monitor and the -20 dBFS level cap live in autocal and are not reachable from here: there is no option to change them. Stop always works:
+it writes control/abort and, for a run this daemon started, sends SIGINT after 3 s and SIGTERM after 8 s if the run is still alive.
 Actions that cause about a second of silence (mode, flavour, engine) or make the sound louder (eq off) need "confirm": true while mpv is playing.
 """
-import base64, hmac, json, os, re, secrets, shutil, socket, struct, subprocess, sys, threading, time
+import base64, hmac, json, os, re, secrets, shutil, signal, socket, struct, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 VERSION = 1
@@ -265,7 +269,7 @@ def run_action(req):
 # ------------------------------------------------------------------ autocal runs (read-mostly; the only writes are control/continue-<prompt> and control/abort)
 ID_RE = re.compile(r"[0-9]{8}-[0-9]{6}")
 PROMPT_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
-ACTIVE_STATES = ("preflight", "ramp", "channel_id", "sweeping", "waiting_user", "analysing")
+ACTIVE_STATES = ("idle", "preflight", "ramp", "channel_id", "sweeping", "waiting_user", "analysing")
 DEAD_AFTER_S = 60          # an active run whose status.json is older than this is not running any more: no control files are written for it
 MAX_JSON = 16 * 1024 * 1024
 RUNS_KEEP = 30
@@ -349,7 +353,9 @@ def autocal_overview():
         runs.append({"id": n, "created": rj.get("created"), "mode": rj.get("mode") or st.get("mode"), "simulated": rj.get("simulated", st.get("simulated")),
                      "state": st.get("state"), "verdict": _verdict_of(d), "message": (st.get("message") or "")[:200]})
     current = _status_of(_run_dir(root, runs[0]["id"])) if runs else None
-    return {"ok": True, "found": True, "runs_dir": root, "runs": runs, "current": current}
+    return {"ok": True, "found": True, "runs_dir": root, "runs": runs, "current": current, "ready": autocal_repo(root) is not None,
+            "trial": trial_state(), "child": {"alive": _child_alive(), "preset": CHILD["preset"], "id": CHILD["id"]} if CHILD["preset"] else None,
+            "log": log_tail() if CHILD["preset"] and (_child_alive() or (current and CHILD["id"] == current.get("id"))) else None}
 
 
 def autocal_detail(rid):
@@ -376,6 +382,18 @@ def autocal_control(req):
     if not d:
         return 404, {"error": "no such run"}
     st = _status_of(d)
+    own = a == "abort" and _child_alive() and CHILD["id"] == rid          # a run this daemon started: Stop always works while its process lives
+    if own:
+        ctl = os.path.join(d, "control")
+        try:
+            os.makedirs(ctl, exist_ok=True)
+            fd = os.open(os.path.join(ctl, "abort"), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644); os.close(fd)
+        except FileExistsError:
+            pass
+        except OSError:
+            pass
+        _stop_child_later(CHILD["proc"])
+        return 200, {"ok": True}
     if not st or st.get("state") not in ACTIVE_STATES:
         return 409, {"error": "this run is not active"}
     if st["stale"]:
@@ -401,6 +419,230 @@ def autocal_control(req):
     except OSError as e:
         return 500, {"error": f"could not write the control file ({e.__class__.__name__})"}
     return 200, {"ok": True}
+
+
+# ------------------------------------------------------------------ autocal stage 2: start a run, apply a proposal (fixed argv, one at a time)
+PRESETS = {                       # the only runs the page can start
+    "check": ["check"],                                            # preflight, noise floor, level ramp, channel ID (plays quiet sounds)
+    "single": ["run", "--mode", "single"],
+    "five": ["run", "--mode", "five"],
+    "sim-single": ["run", "--simulate", "--mode", "single"],       # no audio, no hardware
+    "sim-five": ["run", "--simulate", "--mode", "five"],
+}
+PLAYS_SOUND = ("check", "single", "five")
+ABORT_SIGINT_AFTER_S, ABORT_SIGTERM_AFTER_S = 3.0, 8.0
+APPLY_TIMEOUT_S = 120
+AUTOCAL_LOCK = threading.Lock()
+CHILD = {"proc": None, "id": None, "preset": None, "log": None}
+
+
+def autocal_repo(root=None):
+    """The checkout that holds the `autocal` package: $THEATER_AUTOCAL_REPO, else the folder above runs/. None if it is not there."""
+    root = root or autocal_runs_root()
+    for c in ([os.environ["THEATER_AUTOCAL_REPO"]] if os.environ.get("THEATER_AUTOCAL_REPO") else ([os.path.dirname(root)] if root else [])):
+        if c and os.path.isfile(os.path.join(c, "autocal", "__main__.py")):
+            return os.path.realpath(c)
+    return None
+
+
+def _autocal_env(root, repo):
+    e = dict(os.environ)
+    e["AUTOCAL_RUNS_DIR"] = root
+    e["PYTHONPATH"] = repo + (os.pathsep + e["PYTHONPATH"] if e.get("PYTHONPATH") else "")
+    return e
+
+
+def _child_alive():
+    p = CHILD["proc"]
+    return p is not None and p.poll() is None
+
+
+def trial_state():
+    """The applied-profile trial, if one is pending: {state, run, remaining_s}. Read from autocal's own state file."""
+    f = os.path.join(os.path.expanduser(os.environ.get("AUTOCAL_BACKUP_DIR", "~/.local/share/autocal/backups")), "trial.json")
+    st = _read_json(f)
+    if not st or st.get("state") != "trial":
+        return None
+    rem = float(st.get("deadline_epoch") or 0) - time.time()
+    return {"state": "trial", "run": st.get("run"), "remaining_s": round(rem, 1)} if rem > 0 else None
+
+
+def _active_run(root):
+    """Id of a run (started from anywhere) that is active and still updating, else None."""
+    try:
+        names = sorted((n for n in os.listdir(root) if ID_RE.fullmatch(n)), reverse=True)[:5]
+    except OSError:
+        return None
+    for n in names:
+        d = _run_dir(root, n); st = _status_of(d) if d else None
+        if st and st.get("state") in ACTIVE_STATES and not st["stale"]:
+            return n
+    return None
+
+
+def log_tail(n=40):
+    if not CHILD["log"]:
+        return None
+    try:
+        with open(CHILD["log"], "rb") as f:
+            f.seek(0, os.SEEK_END); size = f.tell(); f.seek(max(0, size - 8000))
+            return [re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", l) for l in f.read().decode("utf-8", "replace").splitlines()[-n:]]
+    except OSError:
+        return None
+
+
+def autocal_start(req):
+    preset = req.get("preset")
+    if not isinstance(preset, str) or preset not in PRESETS:
+        return 400, {"error": "unknown preset"}
+    root = autocal_runs_root(); repo = autocal_repo(root)
+    if not root or not repo:
+        return 409, {"error": "autocal is not set up here (no runs folder or no autocal package); re-run gui/install-ctld.sh from your checkout"}
+    with AUTOCAL_LOCK:
+        if _child_alive():
+            return 409, {"error": f"a run is already in progress ({CHILD['id'] or 'starting'})"}
+        busy = _active_run(root)
+        if busy:
+            return 409, {"error": f"a run is already in progress ({busy})"}
+        if trial_state():
+            return 409, {"error": "a trial of an applied profile is running: press Keep or Roll back first"}
+        if preset in PLAYS_SOUND and req.get("confirm") is not True:
+            return 409, {"error": "confirm", "message": ("This plays test sounds through the speakers: quiet chirps first, then sweeps that rise to at most -20 dBFS "
+                                                         "(the cap is enforced by autocal). " + {"check": "It checks the microphone, the room noise, the sweep level and that every speaker answers, and stops there. ",
+                                                                                                "single": "One position: about 5 minutes. ", "five": "Five positions with the microphone moved between them: about 25 minutes. "}[preset]
+                                                         + "The first step checks the microphone and room noise and stops the run before any sound if something is wrong. "
+                                                         "Be at the listening position with the microphone in place; stop at any time with Stop the run")}
+        log = os.path.join(root, ".ctld-run.log")
+        before = set(os.listdir(root))
+        try:
+            with open(log, "wb") as lf:
+                proc = subprocess.Popen([sys.executable, "-m", "autocal", *PRESETS[preset][:1], "--runs-dir", root, *PRESETS[preset][1:]], cwd=repo,
+                                        env=_autocal_env(root, repo), stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT, close_fds=True, start_new_session=True)
+        except OSError as e:
+            return 500, {"error": f"could not start autocal ({e.__class__.__name__})"}
+        CHILD.update(proc=proc, id=None, preset=preset, log=log)
+    rid = None
+    for _ in range(80):
+        time.sleep(0.1)
+        fresh = sorted(n for n in os.listdir(root) if n not in before and ID_RE.fullmatch(n))
+        if fresh:
+            rid = fresh[-1]; CHILD["id"] = rid; break
+        if proc.poll() is not None:
+            break
+    if rid is None and proc.poll() is not None:
+        return 500, {"error": f"autocal exited at once (code {proc.returncode})", "output": "\n".join(log_tail() or [])}
+    return 200, {"ok": True, "id": rid}
+
+
+def _stop_child_later(proc):
+    def go():
+        time.sleep(ABORT_SIGINT_AFTER_S)
+        if proc.poll() is None:
+            try:
+                proc.send_signal(signal.SIGINT)
+            except OSError:
+                return
+        time.sleep(max(0.0, ABORT_SIGTERM_AFTER_S - ABORT_SIGINT_AFTER_S))
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+    threading.Thread(target=go, daemon=True).start()
+
+
+def room_changes(before, after):
+    """What a proposal changes: [{what, from, to}] between the room the run started from and room.proposed.json."""
+    out = []; b, a = before or {}, after or {}
+    ba, aa = b.get("align") or {}, a.get("align") or {}
+    for ch in sorted(set(ba) | set(aa)):
+        for k, label, unit in (("delay_ms", "delay", "ms"), ("trim_db", "trim", "dB")):
+            x, y = (ba.get(ch) or {}).get(k), (aa.get(ch) or {}).get(k)
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)) and abs(x - y) > 0.004:
+                out.append({"what": f"{ch} {label}", "from": f"{x:g} {unit}", "to": f"{y:g} {unit}"})
+
+    def fl(fs):
+        return [f"{f.get('type', '?')} {f.get('freq')} Hz {f.get('gain'):+g} dB Q {f.get('q')}" for f in (fs or []) if isinstance(f, dict) and isinstance(f.get("gain"), (int, float))]
+    for label, x, y in (("height tone filters", (b.get("height_tone") or {}).get("filters"), (a.get("height_tone") or {}).get("filters")),
+                        ("extra bass filters", (b.get("bass") or {}).get("extra_filters"), (a.get("bass") or {}).get("extra_filters"))):
+        if fl(x) != fl(y):
+            out.append({"what": label, "from": "; ".join(fl(x)) or "none", "to": "; ".join(fl(y)) or "none"})
+    tx, ty = (b.get("height_tone") or {}).get("trim_db"), (a.get("height_tone") or {}).get("trim_db")
+    if isinstance(tx, (int, float)) and isinstance(ty, (int, float)) and abs(tx - ty) > 0.004:
+        out.append({"what": "height tone trim", "from": f"{tx:g} dB", "to": f"{ty:g} dB"})
+    return out
+
+
+def autocal_preview(rid):
+    root = autocal_runs_root(); d = _run_dir(root, rid)
+    if not d:
+        return 404, {"error": "no such run"}
+    res = _read_json(os.path.join(d, "results.json")); rj = _read_json(os.path.join(d, "run.json")) or {}
+    prop = _read_json(os.path.join(d, "room.proposed.json"))
+    if res is None:
+        return 200, {"ok": True, "can_apply": False, "why_not": "this run has no result (it did not finish)"}
+    simulated = bool(res.get("simulated"))
+    out = {"ok": True, "id": rid, "verdict": res.get("verdict"), "summary": res.get("summary"), "warnings": res.get("warnings") or [], "simulated": simulated,
+           "changes": room_changes(rj.get("room_before"), prop) if prop is not None else None, "force_needed": res.get("verdict") == "FAIL",
+           "trial": "The new profile starts a timed trial: it goes back to the old one by itself unless you press Keep."}
+    why = None
+    if prop is None or not os.path.isfile(os.path.join(d, "config.proposed.yml")):
+        why = "the run has no proposed config (nothing to apply)"
+    elif simulated:
+        why = "this run is SIMULATED; it is never installed on the real system"
+    elif trial_state():
+        why = "a trial is already running: press Keep or Roll back first"
+    elif _child_alive() or _active_run(root):
+        why = "a run is in progress"
+    out["can_apply"], out["why_not"] = why is None, why
+    return 200, out
+
+
+def _run_autocal(tail, timeout):
+    root = autocal_runs_root(); repo = autocal_repo(root)
+    if not root or not repo:
+        return 409, {"error": "autocal is not set up here; re-run gui/install-ctld.sh from your checkout"}
+    try:
+        r = subprocess.run([sys.executable, "-m", "autocal", *tail], cwd=repo, env=_autocal_env(root, repo), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 504, {"error": "autocal did not finish in time; check `autocal keep` / `autocal rollback` in a terminal"}
+    except OSError as e:
+        return 500, {"error": f"could not run autocal ({e.__class__.__name__})"}
+    return 200, {"ok": r.returncode == 0, "returncode": r.returncode, "output": ((r.stdout or "") + (r.stderr or ""))[-4000:]}
+
+
+def autocal_apply(req):
+    rid = req.get("run")
+    code, pv = autocal_preview(rid)
+    if code != 200:
+        return code, pv
+    if not pv.get("can_apply"):
+        return 409, {"error": pv.get("why_not") or "cannot apply this run"}
+    if req.get("confirm") is not True:
+        return 409, {"error": "confirm", "message": f"Apply run {rid}? It changes the live CamillaDSP profile and room settings (a backup is made first) and starts a timed trial."}
+    if pv["force_needed"] and req.get("force") is not True:
+        return 409, {"error": "force", "message": f"The verdict of run {rid} is FAIL. autocal refuses this unless you force it. Apply anyway?"}
+    if not AUTOCAL_LOCK.acquire(blocking=False):
+        return 429, {"error": "another autocal action is running"}
+    try:
+        root = autocal_runs_root()
+        return _run_autocal(["apply", "--runs-dir", root, rid] + (["--force"] if pv["force_needed"] else []), APPLY_TIMEOUT_S)
+    finally:
+        AUTOCAL_LOCK.release()
+
+
+def autocal_trial(req):
+    a = req.get("action")
+    if a not in ("keep", "rollback"):
+        return 400, {"error": "action must be keep or rollback"}
+    if a == "rollback" and req.get("confirm") is not True:
+        return 409, {"error": "confirm", "message": "Restore the profile that was live before the last apply?"}
+    if not AUTOCAL_LOCK.acquire(blocking=False):
+        return 429, {"error": "another autocal action is running"}
+    try:
+        return _run_autocal([a], 60)
+    finally:
+        AUTOCAL_LOCK.release()
 
 
 # ------------------------------------------------------------------ HTTP
@@ -477,6 +719,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, html.replace(b"__TOKEN__", TOKEN.encode()), "text/html")
         if path == "/v1/autocal":
             return self._send(200, autocal_overview())
+        if path == "/v1/autocal/preview":
+            q = dict(p.split("=", 1) for p in (self.path.split("?", 1) + [""])[1].split("&") if "=" in p)
+            code, body = autocal_preview(q.get("id", ""))
+            return self._send(code, body)
         if path == "/v1/autocal/run":
             q = dict(p.split("=", 1) for p in (self.path.split("?", 1) + [""])[1].split("&") if "=" in p)
             code, body = autocal_detail(q.get("id", ""))
@@ -543,7 +789,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._gate():
             return
         ppath = self.path.split("?", 1)[0]
-        if ppath not in ("/v1/action", "/v1/autocal/control"):
+        if ppath not in ("/v1/action", "/v1/autocal/control", "/v1/autocal/start", "/v1/autocal/apply", "/v1/autocal/trial"):
             return self._send(404, {"error": "not found"})
         if not hmac.compare_digest((self.headers.get("X-Theater-Token") or "").encode(), TOKEN.encode()):
             return self._send(401, {"error": "token missing or wrong"})
@@ -554,7 +800,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except (ValueError, OSError):
             return self._send(400, {"error": "body must be a JSON object"})
-        code, body = autocal_control(req) if ppath == "/v1/autocal/control" else run_action(req)
+        code, body = {"/v1/autocal/control": autocal_control, "/v1/autocal/start": autocal_start, "/v1/autocal/apply": autocal_apply,
+                      "/v1/autocal/trial": autocal_trial}.get(ppath, run_action)(req)
         self._send(code, body)
 
 

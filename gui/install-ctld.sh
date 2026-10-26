@@ -26,8 +26,9 @@ mkdir -p "$BIN" "$WEB" "$UNITDIR"
 install -m 755 "$HERE/theater-ctld" "$BIN/theater-ctld"
 install -m 644 "$REPO/index.html" "$WEB/index.html"
 install -m 644 "$REPO/autocal.html" "$WEB/autocal.html"
-# the autocal page reads this checkout's runs/ folder (where `autocal run` writes)
-sed "s|^Environment=THEATER_AUTOCAL_RUNS=.*|Environment=THEATER_AUTOCAL_RUNS=$(cd "$HERE/.." && pwd)/runs|" "$REPO/$UNIT" > "$UNITDIR/$UNIT"
+# the autocal page reads this checkout's runs/ folder (where `autocal run` writes) and runs this checkout's autocal package
+CHECKOUT=$(cd "$HERE/.." && pwd)
+sed -e "s|^Environment=THEATER_AUTOCAL_RUNS=.*|Environment=THEATER_AUTOCAL_RUNS=$CHECKOUT/runs|" -e "s|^Environment=THEATER_AUTOCAL_REPO=.*|Environment=THEATER_AUTOCAL_REPO=$CHECKOUT|" "$REPO/$UNIT" > "$UNITDIR/$UNIT"
 chmod 644 "$UNITDIR/$UNIT"
 systemctl --user daemon-reload
 systemctl --user enable --now "$UNIT" 2>&1 | sed 's/^/  /'

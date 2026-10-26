@@ -52,6 +52,6 @@ While the sub (LFE) sweeps, the mic is checked every 50 ms for second-harmonic d
 Now the sweep stops only if the reading stays over the limit for `HARMONIC_PERSIST_S` = 0.6 s (the windows overlap, so a bang of up to about 0.3 s is shorter than that), or at once if it is worse than `HARMONIC_IMMEDIATE_DBC` = -6 dBc. **The limit (-20 dBc) and the -20 dBFS output cap are unchanged.** Short over-limit readings that were ignored are printed after the position and saved in the run's details.
 On any stop the last 2 s of the mic are saved as `stop-last2s.wav` with a `stop.json` in the run folder, so the cause can be looked at afterwards. The cost: a real distortion is now noticed up to 0.6 s later than before.
 
-## Watching a run from the browser
+## Running it from the browser
 
-`http://127.0.0.1:8765/autocal` (theater-ctld, see the top-level README) shows the run's `status.json` live, the past runs and their results, and offers Continue (writes `control/continue-<prompt id>`) and Stop (writes `control/abort`) for an active run. It cannot start a run or apply a proposal. It never touches the measurement code: the run folder is its whole interface.
+`http://127.0.0.1:8765/autocal` (theater-ctld, see the top-level README) can start the same runs as `autocal check|run --mode single|five` (and simulated practice runs), shows the run live, presses Continue (`control/continue-<prompt id>`) and Stop (`control/abort`), and applies a finished run's proposal after showing what changes (`autocal apply <id>`, plus `--force` only after a separate confirmation for a FAIL verdict). It calls `python3 -m autocal ...` with a fixed argument list and never touches the measurement code or the safety limits.

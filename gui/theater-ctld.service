@@ -7,6 +7,9 @@ Wants=theater-router.service
 Type=simple
 ExecStart=%h/.local/bin/theater-ctld
 Environment=THEATER_AUTOCAL_RUNS=%h/sdht-workspace/roomtone/runs
+Environment=THEATER_AUTOCAL_REPO=%h/sdht-workspace/roomtone
+# autocal runs and the apply trial watchdog are children of this service: restarting the page must not kill a run or the watchdog that reverts a trial
+KillMode=process
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes

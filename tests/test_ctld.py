@@ -285,5 +285,133 @@ os.symlink(f"{runs}/20261025-210000", f"{runs}/20261026-190000")
 check("autocal: a run folder that is a symlink is ignored", ctl({"action": "abort", "run": "20261026-190000"})[0] == 404 and "20261026-190000" not in [r["id"] for r in req("GET", "/v1/autocal")[1]["runs"]])
 os.unlink(f"{runs}/20261026-190000")
 
+# ------------------------------------------------------------------ autocal stage 2: start, stop, apply, keep/rollback, with a FAKE autocal (fixed argv, one run at a time)
+runs2 = f"{tmp}/runs2"; os.makedirs(runs2)
+repo = f"{tmp}/fakerepo"; os.makedirs(f"{repo}/autocal"); open(f"{repo}/autocal/__init__.py", "w").close()
+FLOG = f"{tmp}/fake-autocal.log"
+open(f"{repo}/autocal/__main__.py", "w").write(r'''
+import json, os, signal, sys, time
+cmd, args = sys.argv[1], sys.argv[2:]
+open(os.environ["FAKE_AUTOCAL_LOG"], "a").write(json.dumps([cmd] + args) + "\n")
+runs = os.environ["AUTOCAL_RUNS_DIR"]
+def put(d, rid, state, msg=""):
+    json.dump({"id": rid, "state": state, "mode": "five", "position": 1, "positions_total": 5, "step": state, "progress": 0.1, "message": msg,
+               "mic": {"peak_dbfs": -40.0, "rms_dbfs": -50.0, "noise_floor_dbfs": -60.0}, "level_dbfs": None, "prompt": None, "simulated": "--simulate" in args,
+               "error": None, "updated": "x"}, open(d + "/status.json.tmp", "w")); os.replace(d + "/status.json.tmp", d + "/status.json")
+if cmd in ("run", "check"):
+    rid = os.environ.get("FAKE_RUN_ID", "20261026-200000"); d = runs + "/" + rid; os.makedirs(d + "/control", exist_ok=True)
+    json.dump({"id": rid, "mode": "five", "simulated": "--simulate" in args, "created": "2026-10-26T20:00:00+05:30"}, open(d + "/run.json", "w"))
+    def bye(*a):
+        put(d, rid, "aborted", "interrupted"); sys.exit(3)
+    signal.signal(signal.SIGINT, bye)
+    while True:
+        put(d, rid, "sweeping", "fake sweep")
+        if os.path.exists(d + "/control/abort") and not os.environ.get("FAKE_IGNORE_ABORT"):
+            put(d, rid, "aborted", "user abort"); sys.exit(3)
+        time.sleep(0.05)
+elif cmd == "apply":
+    print("fake apply", args); sys.exit(0)
+elif cmd in ("keep", "rollback"):
+    print("fake", cmd); sys.exit(0)
+''')
+os.environ.update(THEATER_AUTOCAL_RUNS=runs2, THEATER_AUTOCAL_REPO=repo, FAKE_AUTOCAL_LOG=FLOG, AUTOCAL_BACKUP_DIR=f"{tmp}/backups")
+C.ABORT_SIGINT_AFTER_S, C.ABORT_SIGTERM_AFTER_S = 0.5, 1.5
+
+
+def fcalls():
+    return [json.loads(l) for l in open(FLOG).read().splitlines()] if os.path.exists(FLOG) else []
+
+
+def post2(path, body, token=True, headers=None):
+    h = {"X-Theater-Token": C.TOKEN} if token else {}
+    h.update(headers or {})
+    return req("POST", path, body, headers=h)
+
+
+def wait_for(cond, secs=8.0):
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        if cond():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+for pth in ("/v1/autocal/start", "/v1/autocal/apply", "/v1/autocal/trial"):
+    check(f"stage 2: {pth} without a token is 401 and with a cross-origin Origin is 403", post2(pth, {}, token=False)[0] == 401 and post2(pth, {}, headers={"Origin": "https://evil.example"})[0] == 403)
+check("stage 2: nothing ran for the refused requests", fcalls() == [])
+check("stage 2: an unknown preset, a free-form option and a shell string are all refused", all(post2("/v1/autocal/start", b)[0] == 400 for b in
+      ({"preset": "single; reboot"}, {"preset": "six"}, {"preset": ["single"]}, {"mode": "five"}, {})) and fcalls() == [])
+code, j, _, _ = post2("/v1/autocal/start", {"preset": "five"})
+check("stage 2: a real run asks for confirmation first, naming the -20 dBFS cap, and starts nothing", code == 409 and j["error"] == "confirm" and "-20 dBFS" in j["message"] and fcalls() == [], str(j))
+code, j, _, _ = post2("/v1/autocal/start", {"preset": "five", "confirm": "yes"})
+check("stage 2: only a real true confirms", code == 409 and fcalls() == [])
+code, j, _, _ = post2("/v1/autocal/start", {"preset": "five", "confirm": True, "level": -3, "extra": "--allow-boost"})
+rid = j.get("id")
+check("stage 2: confirmed start runs the fixed argv for the preset and nothing from the request", code == 200 and rid == "20261026-200000"
+      and fcalls() == [["run", "--runs-dir", runs2, "--mode", "five"]], str(fcalls()))
+check("stage 2: a second start while one runs is refused", post2("/v1/autocal/start", {"preset": "sim-single"})[0] == 409 and len(fcalls()) == 1)
+code, j, _, _ = req("GET", "/v1/autocal")
+check("stage 2: the overview shows the run as active, its starter and its console output", j["current"]["state"] == "sweeping" and j["child"]["alive"] and j["child"]["id"] == rid and j["ready"] is True, str(j["child"]))
+code, j, _, _ = post2("/v1/autocal/apply", {"run": rid, "confirm": True})
+check("stage 2: apply of an unfinished run is refused", code == 409, str(j))
+code, j, _, _ = post2("/v1/autocal/control", {"action": "abort", "run": rid})
+check("stage 2: Stop writes control/abort and the run ends", code == 200 and wait_for(lambda: not C._child_alive()) and os.path.exists(f"{runs2}/{rid}/control/abort"))
+check("stage 2: the run's final status is aborted", json.load(open(f"{runs2}/{rid}/status.json"))["state"] == "aborted")
+# a run that ignores the abort file still stops: SIGINT after ABORT_SIGINT_AFTER_S
+shutil.rmtree(f"{runs2}/{rid}"); os.environ["FAKE_IGNORE_ABORT"] = "1"; os.environ["FAKE_RUN_ID"] = "20261026-200100"
+code, j, _, _ = post2("/v1/autocal/start", {"preset": "sim-five"})
+rid2 = j.get("id")
+check("stage 2: a simulated run needs no confirmation and gets its own fixed argv", code == 200 and fcalls()[-1] == ["run", "--runs-dir", runs2, "--simulate", "--mode", "five"], str(fcalls()[-1]))
+t0 = time.time(); post2("/v1/autocal/control", {"action": "abort", "run": rid2})
+check("stage 2: Stop still works when the run ignores control/abort (SIGINT, then SIGTERM)", wait_for(lambda: not C._child_alive(), 6.0), f"after {time.time() - t0:.1f} s")
+del os.environ["FAKE_IGNORE_ABORT"]; del os.environ["FAKE_RUN_ID"]
+# an active run started elsewhere (a terminal) blocks a new start; so does a pending trial
+os.makedirs(f"{runs2}/20261026-210000/control"); json.dump({"id": "20261026-210000", "state": "sweeping", "mode": "five", "message": ""}, open(f"{runs2}/20261026-210000/status.json", "w"))
+check("stage 2: a run started from a terminal also blocks a new start", post2("/v1/autocal/start", {"preset": "sim-single"})[0] == 409)
+set_status2 = lambda state: json.dump({"id": "20261026-210000", "state": state, "mode": "five", "message": ""}, open(f"{runs2}/20261026-210000/status.json", "w"))
+set_status2("aborted")
+os.makedirs(f"{tmp}/backups", exist_ok=True)
+json.dump({"state": "trial", "run": "20261026-091500", "deadline_epoch": time.time() + 50}, open(f"{tmp}/backups/trial.json", "w"))
+code, j, _, _ = post2("/v1/autocal/start", {"preset": "sim-single"})
+check("stage 2: no new run while a trial of an applied profile is pending", code == 409 and "trial" in j["error"], str(j))
+check("stage 2: the overview reports the trial and its time left", 0 < req("GET", "/v1/autocal")[1]["trial"]["remaining_s"] <= 50)
+os.remove(f"{tmp}/backups/trial.json")
+
+# apply: preview, confirmation, force for FAIL, never simulated
+MK.make_run(runs2, "20261026-091500", "five", seed=7, scenario="warn", simulated=False)
+MK.make_run(runs2, "20261026-092000", "five", seed=7, scenario="fail", simulated=False)
+MK.make_run(runs2, "20261026-093000", "five", seed=7, scenario="pass", simulated=True)
+pr = json.load(open(f"{runs2}/20261026-091500/room.proposed.json")); pr["align"]["FL"]["trim_db"] = -2.5; pr["bass"]["extra_filters"] = [{"name": "e1", "type": "Peaking", "freq": 52, "gain": -4.0, "q": 3.0}]
+json.dump(pr, open(f"{runs2}/20261026-091500/room.proposed.json", "w"))
+open(FLOG, "w").close()
+code, j, _, _ = req("GET", "/v1/autocal/preview?id=20261026-091500")
+check("stage 2: the preview lists what changes (trim, extra bass filter) and the verdict", code == 200 and j["can_apply"] and not j["force_needed"] and j["verdict"] in ("PASS", "WARN")
+      and any(c["what"] == "FL trim" and c["to"] == "-2.5 dB" for c in j["changes"]) and any("extra bass" in c["what"] for c in j["changes"]), str(j.get("changes")))
+check("stage 2: a FAIL run needs force, a simulated run can never be applied", req("GET", "/v1/autocal/preview?id=20261026-092000")[1]["force_needed"] is True
+      and req("GET", "/v1/autocal/preview?id=20261026-093000")[1]["can_apply"] is False)
+code, j, _, _ = post2("/v1/autocal/apply", {"run": "20261026-091500"})
+check("stage 2: apply without confirmation changes nothing", code == 409 and j["error"] == "confirm" and fcalls() == [])
+code, j, _, _ = post2("/v1/autocal/apply", {"run": "20261026-091500", "confirm": True, "force": True})
+check("stage 2: confirmed apply runs `autocal apply` with the run id, without --force when the verdict allows it", code == 200 and j["ok"] and fcalls() == [["apply", "--runs-dir", runs2, "20261026-091500"]], str(fcalls()))
+open(FLOG, "w").close()
+code, j, _, _ = post2("/v1/autocal/apply", {"run": "20261026-092000", "confirm": True})
+check("stage 2: a FAIL verdict needs its own force confirmation, like the console's --force", code == 409 and j["error"] == "force" and fcalls() == [], str(j))
+code, j, _, _ = post2("/v1/autocal/apply", {"run": "20261026-092000", "confirm": True, "force": True})
+check("stage 2: with force it runs `autocal apply ... --force`", code == 200 and fcalls() == [["apply", "--runs-dir", runs2, "20261026-092000", "--force"]], str(fcalls()))
+open(FLOG, "w").close()
+check("stage 2: a simulated run, a bad id and a traversal are refused before anything runs", post2("/v1/autocal/apply", {"run": "20261026-093000", "confirm": True})[0] == 409
+      and post2("/v1/autocal/apply", {"run": "20261026-091500; reboot", "confirm": True})[0] == 404 and post2("/v1/autocal/apply", {"run": "../x", "confirm": True})[0] == 404 and fcalls() == [])
+check("stage 2: keep runs `autocal keep`; rollback asks first and then runs `autocal rollback`", post2("/v1/autocal/trial", {"action": "keep"})[0] == 200
+      and post2("/v1/autocal/trial", {"action": "rollback"})[1]["error"] == "confirm" and post2("/v1/autocal/trial", {"action": "rollback", "confirm": True})[0] == 200
+      and fcalls() == [["keep"], ["rollback"]] and post2("/v1/autocal/trial", {"action": "verify"})[0] == 400, str(fcalls()))
+os.environ["FAKE_RUN_ID"] = "20261026-200200"; open(FLOG, "w").close()
+code, j, _, _ = post2("/v1/autocal/start", {"preset": "sim-single"})
+code2, j2, _, _ = post2("/v1/autocal/apply", {"run": "20261026-091500", "confirm": True})
+check("stage 2: a finished run cannot be applied while a measurement is running", code == 200 and code2 == 409 and "run is in progress" in j2["error"] and ["apply"] not in [c[:1] for c in fcalls()], str(j2))
+post2("/v1/autocal/control", {"action": "abort", "run": j.get("id")}); wait_for(lambda: not C._child_alive())
+del os.environ["FAKE_RUN_ID"]
+C.ABORT_SIGINT_AFTER_S, C.ABORT_SIGTERM_AFTER_S = 3.0, 8.0
+
 print("\nALL PASS" if ok else "\nSOME FAILED")
 sys.exit(0 if ok else 1)
