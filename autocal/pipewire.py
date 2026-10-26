@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import signal
+import struct
 import subprocess
 import tempfile
 import threading
@@ -45,6 +46,7 @@ class PipewireBackend(Backend):
         self.pw_play, self.pw_record, self.pactl = pw_play, pw_record, pactl
         self.workdir = workdir or tempfile.mkdtemp(prefix="autocal-")
         self.kill_grace_s = kill_grace_s
+        self.rec_format = None
 
     # -- preflight -------------------------------------------------------------------------------------------------------------------
     def _run(self, *argv):
@@ -71,7 +73,15 @@ class PipewireBackend(Backend):
         if self.mic and not mic:
             notes.append(f"MIC={self.mic} is not among the capture devices: {', '.join(sources) or 'none'}")
         streams = self._other_streams()
-        return {"mic": mic, "other_streams": streams, "profile": "live CamillaDSP profile (room.json)", "notes": notes}
+        muted = level = None
+        if mic:
+            rc, out = self._run(self.pactl, "get-source-mute", mic)
+            muted = True if (rc == 0 and "yes" in out.lower()) else (False if (rc == 0 and "no" in out.lower()) else None)
+            rc, out = self._run(self.pactl, "get-source-volume", mic)
+            pct = re.findall(r"(\d+)%", out) if rc == 0 else []
+            level = float(pct[0]) if pct else None
+        return {"mic": mic, "other_streams": streams, "profile": "live CamillaDSP profile (room.json)", "notes": notes,
+                "mic_muted": muted, "mic_level_pct": level}
 
     def _other_streams(self):
         """Playback streams other than CamillaDSP's own (its playback node is always a sink-input of the pulse view: 8ch float32).
@@ -94,33 +104,115 @@ class PipewireBackend(Backend):
     def record_noise(self, seconds, monitor=None):
         return self.play_record(np.zeros((int(seconds * FS), 8)), monitor, stage="noise", pre_s=0.0, post_s=0.0, silent=True)
 
+    REC_CH = 2          # record both channels like rec.sh does (a TRRS mic adapter may carry the mic on one channel only)
+
     def _start_recorder(self):
         if not self.mic:
             raise BackendError("no microphone selected: export MIC=<name> (see ./rec.sh list)")
-        return subprocess.Popen([self.pw_record, "--target", self.mic, "--rate", str(FS), "--channels", "1", "--format", "f32", "-"],
+        return subprocess.Popen([self.pw_record, "--target", self.mic, "--rate", str(FS), "--channels", str(self.REC_CH), "--format", "f32", "-"],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
 
     @staticmethod
-    def _reader(proc, q):
-        """Reads the recorder's stdout: skips a RIFF/WAV header if present, then puts float32 sample blocks on q (None at EOF)."""
-        buf = b""; header_done = False
-        while True:
-            chunk = proc.stdout.read(4800 * 4)
-            if not chunk:
-                q.put(None); return
-            buf += chunk
-            if not header_done:
-                if len(buf) < 12:
-                    continue
-                if buf[:4] == b"RIFF":
-                    i = buf.find(b"data")
-                    if i < 0:
+    def _parse_fmt(hdr):
+        """(format code, channels, rate, bits) from the 'fmt ' chunk in a WAV header, or None."""
+        j = hdr.find(b"fmt ")
+        if j < 0 or len(hdr) < j + 24:
+            return None
+        tag, ch, rate, _, _, bits = struct.unpack_from("<HHIIHH", hdr, j + 8)
+        if tag == 0xFFFE and len(hdr) >= j + 8 + 26:                       # WAVE_FORMAT_EXTENSIBLE: the real code is the first 2 bytes of the GUID
+            tag = struct.unpack_from("<H", hdr, j + 8 + 24)[0]
+        return tag, ch, rate, bits
+
+    @staticmethod
+    def _decode(raw, tag, bits, ch, big=False):
+        """Interleaved samples (little-endian, or big-endian for AU) -> float array (frames, ch). Raises BackendError for a format we do not know."""
+        e = ">" if big else "<"
+        if tag == 3 and bits == 32:
+            a = np.frombuffer(raw, dtype=e + "f4").astype(np.float64)
+        elif tag == 1 and bits == 16:
+            a = np.frombuffer(raw, dtype=e + "i2") / 32768.0
+        elif tag == 1 and bits == 24:
+            b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+            v = ((b[:, 0] << 16) | (b[:, 1] << 8) | b[:, 2]) if big else (b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16))
+            a = np.where(v >= 1 << 23, v - (1 << 24), v) / 2.0 ** 23
+        elif tag == 1 and bits == 32:
+            a = np.frombuffer(raw, dtype=e + "i4") / 2.0 ** 31
+        else:
+            raise BackendError(f"pw-record wrote an unexpected sample format (format code {tag}, {bits} bit)")
+        return a.reshape(-1, ch)
+
+    AU_ENC = {2: (1, 8), 3: (1, 16), 4: (1, 24), 5: (1, 32), 6: (3, 32)}      # AU encoding code -> (WAV-style format code, bits)
+
+    def _reader(self, proc, q):
+        """Reads the recorder's stdout: parses a RIFF/WAV header if there is one (otherwise assumes float32 x REC_CH), then puts blocks of
+        float samples, shape (frames, channels), on q. At the end q gets None; a problem is put on q as an exception."""
+        buf = b""; fmt = None; header_done = False; big = False
+        try:
+            while True:
+                chunk = proc.stdout.read(4800 * 8)
+                if not chunk:
+                    q.put(None); return
+                buf += chunk
+                if not header_done:
+                    if len(buf) < 12:
                         continue
-                    buf = buf[i + 8:]
-                header_done = True
-            n = len(buf) // 4 * 4
-            if n:
-                q.put(np.frombuffer(buf[:n], dtype="<f4").astype(np.float64)); buf = buf[n:]
+                    container = "raw (assumed float32)"
+                    if buf[:4] == b"RIFF":
+                        i = buf.find(b"data")
+                        if i < 0:
+                            continue
+                        fmt = self._parse_fmt(buf[:i]); buf = buf[i + 8:]; container = "WAV"
+                    elif buf[:4] == b".snd":                                     # AU: what pw-cat writes to stdout when no container is given; big-endian
+                        if len(buf) < 24:
+                            continue
+                        off, _, enc, rate_, ch_ = struct.unpack(">IIIII", buf[4:24])
+                        if enc not in self.AU_ENC or len(buf) < off:
+                            if enc not in self.AU_ENC:
+                                raise BackendError(f"pw-record wrote an AU stream with an unsupported encoding ({enc})")
+                            continue
+                        fmt = (self.AU_ENC[enc][0], ch_, rate_, self.AU_ENC[enc][1]); big = True; buf = buf[off:]; container = "AU (big-endian)"
+                    header_done = True
+                    tag, ch, rate, bits = fmt or (3, self.REC_CH, FS, 32)
+                    self.rec_format = {"tag": tag, "channels": ch, "rate": rate, "bits": bits, "header": fmt is not None, "container": container}
+                    if rate != FS:
+                        raise BackendError(f"pw-record is delivering {rate} Hz, not {FS}")
+                tag, ch, rate, bits = self.rec_format["tag"], self.rec_format["channels"], self.rec_format["rate"], self.rec_format["bits"]
+                frame = bits // 8 * ch; n = len(buf) // frame * frame
+                if n:
+                    q.put(self._decode(buf[:n], tag, bits, ch, big)); buf = buf[n:]
+        except BackendError as e:
+            q.put(e)
+
+    def _mic_channel(self, blk):
+        """The analysed channel of a recorded block: channel 0 (what rec.sh recordings have always been analysed with), or AUTOCAL_MIC_CHANNEL."""
+        k = int(os.environ.get("AUTOCAL_MIC_CHANNEL", "0"))
+        return blk[:, k if k < blk.shape[1] else 0]
+
+    def meter(self, seconds=20.0, emit=print):
+        """Live mic levels, no sound played: per 100 ms the rms of each channel and of their sum, so a dead, muted or cancelling input is visible."""
+        rec = self._start_recorder(); q = queue.Queue()
+        th = threading.Thread(target=self._reader, args=(rec, q), daemon=True); th.start()
+        t0 = time.monotonic(); pend = np.zeros((0, self.REC_CH))
+        def db(v):
+            return 20 * np.log10(max(v, 1e-9))
+        try:
+            while time.monotonic() - t0 < seconds:
+                try:
+                    blk = q.get(timeout=2.0)
+                except queue.Empty:
+                    raise BackendError("pw-record delivered no audio for 2 s (wrong --target, or the recorder died)")
+                if blk is None:
+                    raise BackendError("pw-record ended unexpectedly")
+                if isinstance(blk, Exception):
+                    raise blk
+                pend = np.concatenate([pend, blk]) if pend.shape[1] == blk.shape[1] else blk
+                while len(pend) >= 4800:
+                    b, pend = pend[:4800], pend[4800:]
+                    rms = np.sqrt(np.mean(b ** 2, 0)); mix = np.sqrt(np.mean(np.mean(b, 1) ** 2))
+                    emit("  ".join(f"ch{i} {db(r):6.1f}" for i, r in enumerate(rms)) + f"   sum {db(mix):6.1f}   peak {db(np.max(np.abs(b))):6.1f} dBFS")
+        finally:
+            self._stop(rec, term_only=True)
+        return self.rec_format
 
     def play_record(self, x8, monitor=None, stage="play", pre_s=1.0, post_s=1.0, silent=False):
         self.check_cap(x8)
@@ -141,7 +233,9 @@ class PipewireBackend(Backend):
                     raise BackendError("pw-record delivered no audio for 1 s (wrong --target, or the recorder died)")
                 if blk is None:
                     raise BackendError("pw-record ended unexpectedly")
-                pend = np.concatenate([pend, blk])
+                if isinstance(blk, Exception):
+                    raise blk
+                pend = np.concatenate([pend, self._mic_channel(blk)])
                 while len(pend) >= nb:
                     b, pend = pend[:nb], pend[nb:]
                     got.append(b); n_got += nb; t = n_got / FS

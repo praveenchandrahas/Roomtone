@@ -99,6 +99,20 @@ def cmd_rollback(a):
     return 0
 
 
+def cmd_mic(a):
+    """Live mic meter: plays nothing. Tap or talk into the mic and watch the levels."""
+    from .backend import BackendError
+    from .pipewire import PipewireBackend
+    be = PipewireBackend()
+    print(f"microphone: {be.mic or '(set MIC=<name>, see ./rec.sh list)'}; {a.seconds:g} s; tap the mic or talk into it. Nothing is played.")
+    try:
+        fmt = be.meter(a.seconds)
+    except BackendError as e:
+        print(f"STOPPED: {e}", file=sys.stderr); return 1
+    print(f"pw-record delivered: {fmt}")
+    return 0
+
+
 def cmd_verify(a):
     from . import verify
     d = resolve_run(_runs_dir(a), a.run)
@@ -136,6 +150,8 @@ def parser():
         s.add_argument("--sim-fault", action="append", default=[], help=argparse.SUPPRESS)
         s.add_argument("--sim-sub-distortion", type=float, default=None, help=argparse.SUPPRESS)
         s.add_argument("--sim-other-stream", action="store_true", help=argparse.SUPPRESS)
+    s = sub.add_parser("mic", help="live microphone levels per channel (plays nothing): is the mic alive, muted, or cancelling?")
+    s.add_argument("--seconds", type=float, default=20.0)
     s = sub.add_parser("report", help="regenerate report.html for a run"); common(s); s.add_argument("run")
     s = sub.add_parser("apply", help="install a run's proposal with a trial (explicit; backs up first)"); common(s); s.add_argument("run")
     s.add_argument("--trial-seconds", type=float, default=install.TRIAL_S); s.add_argument("--wait", action="store_true", help="stay until the trial is kept or reverted")
@@ -155,6 +171,8 @@ def main(argv=None):
             return cmd_run(a)
         if a.cmd == "check":
             return cmd_run(a, check_only=True)
+        if a.cmd == "mic":
+            return cmd_mic(a)
         if a.cmd == "report":
             return cmd_report(a)
         if a.cmd == "apply":

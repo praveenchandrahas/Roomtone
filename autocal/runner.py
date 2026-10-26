@@ -111,7 +111,10 @@ class Run:
             raise RunAborted("no measurement microphone found", "error")
         if pf.get("other_streams"):
             raise RunAborted("another audio stream is active on the output (" + ", ".join(pf["other_streams"]) + "): close mpv/Chrome and retry", "error")
-        self.say(f"preflight: mic {pf['mic']}; profile {pf.get('profile')}")
+        if pf.get("mic_muted"):
+            raise RunAborted(f"the microphone {pf['mic']} is muted in PipeWire: unmute it and set the level you calibrated (./rec.sh gain 60%)", "error")
+        lvl = pf.get("mic_level_pct")
+        self.say(f"preflight: mic {pf['mic']}" + (f" (capture level {lvl:.0f}%)" if lvl is not None else "") + f"; profile {pf.get('profile')}")
         nf = self.be.record_noise(self.cfg.noise_s, self.monitor(check_clipping=False))
         if nf.aborted:
             raise RunAborted(f"noise floor: {nf.aborted}")
@@ -121,7 +124,11 @@ class Run:
         self.status.update(mic={"noise_floor_dbfs": round(floor, 1)})
         if floor > -35.0:
             raise RunAborted(f"noise floor {floor:.0f} dBFS is too high to measure (fan, neighbours, or mic gain)", "error")
-        self.say(f"noise floor {floor:.1f} dBFS rms")
+        frames = nf.x[:len(nf.x) // 4800 * 4800].reshape(-1, 4800)
+        # the ramp is read as the loudest 100 ms frame of the mic, so it is compared with the loudest 100 ms frame of the noise (like with like)
+        self.floor_frame = SF.dbfs(np.sqrt(np.max(np.mean(frames ** 2, 1)))) if len(frames) else floor
+        self.details["noise_floor_loudest_frame_dbfs"] = self.floor_frame
+        self.say(f"noise floor {floor:.1f} dBFS rms (loudest 100 ms frame {self.floor_frame:.1f})")
 
     def ramp(self):
         self.st("ramp", "level ramp", "finding the playback level", 0.06)
@@ -135,10 +142,14 @@ class Run:
             fr = cap.x[:len(cap.x) // 4800 * 4800].reshape(-1, 4800)
             m = SF.dbfs(np.sqrt(np.max(np.mean(fr ** 2, 1))))
             steps.append((lv, m)); peaks.append(SF.dbfs(np.max(np.abs(cap.x))))
-            self.say(f"  ramp {lv:6.1f} dBFS -> mic {m:6.1f} dBFS rms ({m - self.floor:+.1f} dB over the floor)")
-            if m - self.floor >= ST.RAMP_SNR_TARGET_DB:
+            self.say(f"  ramp {lv:6.1f} dBFS -> mic {m:6.1f} dBFS (loudest 100 ms frame; {m - self.floor_frame:+.1f} dB over the loudest noise frame)")
+            try:                                   # keep the mic recording of every step: it is how a silent or misaligned burst is diagnosed afterwards
+                IR.write_wav24(os.path.join(self.dir, f"ramp_{lv:+05.1f}dBFS.wav".replace("+", "p").replace("-", "m")), cap.x)
+            except OSError:
+                pass
+            if m - self.floor_frame >= ST.RAMP_SNR_TARGET_DB:
                 break
-        lv, snr, reached = ST.ramp_decision(steps, self.floor)
+        lv, snr, reached = ST.ramp_decision(steps, self.floor_frame)
         self.ramp_steps = steps
         self.ramp_level = lv
         stop_peak = peaks[[a for a, _ in steps].index(lv)]
@@ -147,6 +158,11 @@ class Run:
                                 "sweep_level_dbfs": self.sweep_level, "mic_peak_at_stop_dbfs": round(stop_peak, 1)}
         if not reached:
             self.details["ramp"]["note"] = f"never reached {ST.RAMP_SNR_TARGET_DB:.0f} dB over the floor up to the {ST.CAP_DBFS:.0f} dBFS cap"
+            rise = steps[-1][0] - steps[0][0]; spread = max(m for _, m in steps) - min(m for _, m in steps)
+            if len(steps) >= 4 and rise >= 20 and spread < 6:
+                raise RunAborted(f"the microphone level did not follow the bursts: it stayed within {spread:.0f} dB while the bursts rose {rise:.0f} dB, so it is hearing "
+                                 f"room noise only. Either the bursts are not reaching the speakers (were they audible?) or the mic does not pick them up "
+                                 f"(muted, wrong input, level). Run 'python3 -m autocal mic' and tap the mic to watch its levels; the ramp recordings are in the run folder", "error")
             if snr < 10:
                 raise RunAborted(f"the microphone hears almost nothing even at the {ST.CAP_DBFS:.0f} dBFS cap ({snr:.0f} dB over the floor): wrong mic, gain or Z906 volume", "error")
         self.say(f"sweep level {self.sweep_level:.1f} dBFS (ramp stopped at {lv:.0f} dBFS, {snr:.0f} dB over the floor)")

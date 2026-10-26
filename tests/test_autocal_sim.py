@@ -1,8 +1,12 @@
 """Tests for the simulated room (autocal/sim), the Backend interface, the safety monitor and the abort paths, and PipewireBackend against FAKE
 pw-play / pw-record executables (process handling only: PipewireBackend is UNTESTED ON HARDWARE).
 Run: python3 tests/test_autocal_sim.py   (needs numpy, scipy)"""
+import io
+import queue
+import struct
 import json
 import os
+import queue
 import stat
 import tempfile
 import textwrap
@@ -132,11 +136,12 @@ with tempfile.TemporaryDirectory() as td:
         import struct, sys, time, signal, numpy as np
         signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
         out = sys.stdout.buffer
-        out.write(b"RIFF" + struct.pack("<I", 0xFFFFFFFF) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 3, 1, 48000, 192000, 4, 32) + b"data" + struct.pack("<I", 0xFFFFFFFF)); out.flush()
+        # stereo float32 WAV stream; the right channel is the INVERSE of the left (a mono down-mix of this is silence)
+        out.write(b"RIFF" + struct.pack("<I", 0xFFFFFFFF) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 3, 2, 48000, 384000, 8, 32) + b"data" + struct.pack("<I", 0xFFFFFFFF)); out.flush()
         t0 = time.monotonic(); n = 0
         while True:
             blk = (0.01 * np.sin(2 * np.pi * 440 * (np.arange(2400) + n) / 48000)).astype("<f4"); n += 2400
-            out.write(blk.tobytes()); out.flush()
+            out.write(np.stack([blk, -blk], 1).tobytes()); out.flush()
             time.sleep(max(0, t0 + n / 48000 - time.monotonic()))
         '''))
     open(play, "w").write(textwrap.dedent(f'''\
@@ -156,6 +161,10 @@ with tempfile.TemporaryDirectory() as td:
         import sys
         if sys.argv[1:4] == ["list", "short", "sources"]:
             print("1\\tusb-mic-source\\tPipeWire\\ts16le 1ch 48000Hz\\tRUNNING"); print("2\\tsink.monitor\\tPipeWire\\ts16le 2ch 48000Hz\\tIDLE")
+        elif sys.argv[1] == "get-source-mute":
+            print("Mute: " + ("yes" if __import__("os").environ.get("FAKE_MUTED") else "no"))
+        elif sys.argv[1] == "get-source-volume":
+            print("Volume: front-left: 39321 /  60% / -13.31 dB,   front-right: 39321 /  60% / -13.31 dB")
         elif sys.argv[1:3] == ["list", "sink-inputs"]:
             # CamillaDSP's own playback node is always there (8ch float32): it must NOT count as another stream
             print('Sink Input #74437\\n\\tDriver: PipeWire\\n\\tSample Specification: float32le 8ch 48000Hz\\n\\tProperties:\\n\\t\\tmedia.name = "camilladsp-playback"\\n\\t\\tnode.name = "camilladsp-playback"\\n\\t\\tapplication.name = "camilladsp"\\n')
@@ -181,6 +190,8 @@ with tempfile.TemporaryDirectory() as td:
     pb = PipewireBackend(mic="usb-mic-source", pw_play=play, pw_record=rec, pactl=pactl, pw_link=plink, workdir=td, kill_grace_s=0.3)
     pf = pb.preflight()
     check("PipewireBackend preflight finds the mic among the non-monitor sources and sees no other streams", pf["mic"] == "usb-mic-source" and pf["other_streams"] == [], f"({pf})")
+    check("preflight reports the mic's capture level and mute state", pf["mic_level_pct"] == 60.0 and pf["mic_muted"] is False, f"({pf})")
+    os.environ["FAKE_MUTED"] = "1"; check("a muted mic is reported as muted", pb.preflight()["mic_muted"] is True); del os.environ["FAKE_MUTED"]
     os.environ["FAKE_BUSY"] = "1"
     check("PipewireBackend preflight reports another stream on the sink (mpv) but not CamillaDSP's own playback node", pb.preflight()["other_streams"] == ["77:mpv"], f"({pb.preflight()['other_streams']})")
     del os.environ["FAKE_BUSY"]
@@ -195,7 +206,34 @@ with tempfile.TemporaryDirectory() as td:
     links = [l.split() for l in lg.splitlines() if l.startswith("link ")]
     check("link method: the 8 test-stream ports are linked, in channel order, to camilladsp-capture:input_1..8",
           [(l[1], l[2]) for l in links] == [(f"autocal-play:output_{n}", f"camilladsp-capture:input_{i + 1}") for i, n in enumerate("FL FR RL RR FC LFE SL SR".split())], f"({links})")
-    check("the recording's float32 samples arrive intact (440 Hz tone at 0.01)", abs(np.max(np.abs(cap.x)) - 0.01) < 1e-4)
+    check("the recording's float32 samples arrive intact (440 Hz tone at 0.01); channel 0 is used, not a mono mix (the fake's channels cancel)", abs(np.max(np.abs(cap.x)) - 0.01) < 1e-4)
+    check("the recorder's real format is read from its WAV header (2 ch, 32-bit float)", pb.rec_format == {"tag": 3, "channels": 2, "rate": 48000, "bits": 32, "header": True, "container": "WAV"}, f"({pb.rec_format})")
+    lines = []; fmt = pb.meter(0.6, emit=lines.append)
+    check("the live meter shows both channels and their sum: ch0 about -43 dBFS rms, the sum far below it", len(lines) >= 4 and "ch0" in lines[0] and "ch1" in lines[0] and float(lines[1].split("sum")[1].split()[0]) < -70 and -46 < float(lines[1].split("ch0")[1].split()[0]) < -40, f"({lines[:2]})")
+    d = PipewireBackend._decode
+    check("decoder: 16-bit and 24-bit PCM and 32-bit PCM are converted to the same float values",
+          abs(d(np.array([16384, -16384], "<i2").tobytes(), 1, 16, 1)[0, 0] - 0.5) < 1e-6 and abs(d(bytes([0, 0, 0x40, 0, 0, 0xC0]), 1, 24, 1)[1, 0] + 0.5) < 1e-6 and abs(d(np.array([1 << 30], "<i4").tobytes(), 1, 32, 1)[0, 0] - 0.5) < 1e-6)
+    try:
+        d(b"\0" * 8, 99, 8, 1); ok = False
+    except BackendError:
+        ok = True
+    check("an unknown sample format is a clear error, not garbage", ok)
+    # the reader against an AU stream (what pw-cat writes to stdout without a container): big-endian float32, 2 channels
+    import io
+    class _P:   # minimal stand-in for a Popen with a stdout
+        def __init__(self, data): self.stdout = io.BytesIO(data)
+    sig = (0.01 * np.sin(2 * np.pi * 440 * np.arange(4800) / 48000))
+    au = b".snd" + struct.pack(">IIIII", 24, 0xFFFFFFFF, 6, 48000, 2) + np.stack([sig, -sig], 1).astype(">f4").tobytes()
+    q2 = queue.Queue(); pbr = PipewireBackend(mic="m", workdir=td); pbr._reader(_P(au), q2)
+    parts = []
+    while True:
+        it = q2.get()
+        if it is None: break
+        parts.append(it)
+    blk = np.concatenate(parts)
+    check("AU stream (big-endian float32) is decoded: channel 0 carries the tone at 0.01, container named", blk.shape == (4800, 2) and abs(np.max(np.abs(blk[:, 0])) - 0.01) < 1e-6 and pbr.rec_format["container"].startswith("AU"), f"({blk.shape}, {pbr.rec_format})")
+    q3 = queue.Queue(); pbr = PipewireBackend(mic="m", workdir=td); pbr._reader(_P(b".snd" + struct.pack(">IIIII", 24, 0, 99, 48000, 2)), q3)
+    check("an AU stream with an encoding we do not know is a clear error", isinstance(q3.get(), BackendError))
     open(log, "w").close()
     stop_at = {"t": None}
 
