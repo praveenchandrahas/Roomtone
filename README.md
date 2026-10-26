@@ -44,6 +44,11 @@ The three blocks map to this repository like this: the **measurement data path**
 ## Status and control (gui/ and overlay/)
 
 - **Page:** `gui/install-ctld.sh` installs `theater-ctld` as a user service on `127.0.0.1:8765` (needs the router's `eq status --json` from linux-theater-dsp first; `remove` undoes it). Shows now-playing, profile and engine, CamillaDSP live numbers (needs its websocket: `-p 1234 -a 127.0.0.1`), and offers EQ, profile mode, flavours and engine as buttons. A live **sound field** shows the level of each of the 8 outputs (FL FR FC LFE SL SR and the two ceiling speakers) in a plan view of the room plus meters, about 20 times a second (`/v1/levels`, read-only `GetPlaybackSignalPeak/Rms`). It is the signal after EQ, not room sound pressure and not object positions; the "loudest" and glow centre are level-weighted, not a rendered object position. Localhost only, a token on every action, fixed action table; details in `gui/theater-ctld`'s header. Tests: `tests/test_ctld.py`.
+
+<p align="center"><img src="docs/img/control-dark.png" alt="The Roomtone control page: a plan view of the 5.1.2 room with live per-speaker levels, eight meters, now playing, and the controls" width="880"></p>
+
+*The control page (dark theme; it follows your system theme, so there is a light one too: [`docs/img/control-light.png`](docs/img/control-light.png)). These screenshots were taken against a simulated CamillaDSP that generates moving levels, so the numbers and the "now playing" text are made up for the picture, not a recording of a film on the rig.*
+
 - **Overlay:** `overlay/install-theater-status.sh --bindings` installs the mpv script and binds **C**. One panel: status first, then a row per setting showing its current value; Enter steps a row, risky changes ask first. Tests: `tests/test_theater_status.py` (mocked mpv, needs `pip install lupa`).
 - **Mic noise check:** `python3 -m autocal mic --spectrum` records 15 s (nothing is played) and prints the noise floor per octave band with its spread over time, and the strongest narrow tone, to tell a cycling compressor or fan from electrical hum before a calibration run.
 
