@@ -45,3 +45,9 @@ The bass gate compares the 35-45 Hz signal of each channel with the room noise. 
 `--noise-ref` seconds of silence before and after the sweeps (default 20 s each, so about 40 s more per position; `0` restores the old estimate) and measures the noise by passing those recordings through exactly the same deconvolution (`ir.noise_ir_power`); that estimate scatters by about 0.5 dB.
 A steady hum (a transformer, a fan) is part of the noise reference and counted as noise, as it should be. The run prints the noise level before and after and notes it if it changed by more than 6 dB during a position. A burst of noise that happens only during one sweep is not in the before/after reference; `snr40_slot_db` keeps the in-sweep value and the STOPPED message shows both when they differ by 3 dB or more.
 Checked on synthetic noise and the simulated room only; not yet on a real run.
+
+## Sub distortion stop (changed 2026-10-26, at the owner's request)
+
+While the sub (LFE) sweeps, the mic is checked every 50 ms for second-harmonic distortion (a 0.3 s window, 28-100 Hz, limit -20 dBc). Until 2026-10-26 one reading over the limit stopped the sweep; one was triggered at 58 Hz by what looks like a room noise, since the same sweep's recordings never went above -28 dBc and no playback dropout was logged.
+Now the sweep stops only if the reading stays over the limit for `HARMONIC_PERSIST_S` = 0.6 s (the windows overlap, so a bang of up to about 0.3 s is shorter than that), or at once if it is worse than `HARMONIC_IMMEDIATE_DBC` = -6 dBc. **The limit (-20 dBc) and the -20 dBFS output cap are unchanged.** Short over-limit readings that were ignored are printed after the position and saved in the run's details.
+On any stop the last 2 s of the mic are saved as `stop-last2s.wav` with a `stop.json` in the run folder, so the cause can be looked at afterwards. The cost: a real distortion is now noticed up to 0.6 s later than before.

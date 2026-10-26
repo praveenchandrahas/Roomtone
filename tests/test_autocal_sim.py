@@ -117,6 +117,41 @@ check("a clean sub does not trigger the harmonic abort", cap.aborted is None, f"
 t_ = np.arange(FS) / FS
 check("harmonic_dbc measures a known 2nd harmonic (-20 dBc)", abs(SF.harmonic_dbc(np.sin(2 * np.pi * 50 * t_) + 0.1 * np.sin(2 * np.pi * 100 * t_), 50.0) + 20) < 0.5)
 
+
+# ---- harmonic monitor: a short bang is ignored, lasting distortion still stops (owner's decision 2026-10-26), gross distortion stops at once
+def drive(mon, h2=None, h2_from=0.0, h2_to=0.0, T=7.0, f0=35.0, f1=200.0, t0=1.0, amp=0.05, total=9.0):
+    """Feeds the monitor a synthetic mic: a swept fundamental plus (optionally) a second harmonic of relative amplitude h2 between h2_from and h2_to (s)."""
+    n = int(total * FS); t = np.arange(n) / FS; ts = np.clip(t - t0, 0, T)
+    k = np.log(f1 / f0) / T
+    ph = 2 * np.pi * f0 * (np.exp(k * ts) - 1) / k
+    x = amp * np.sin(ph) * (t >= t0)
+    if h2:
+        on = (t >= h2_from) & (t < h2_to)
+        x = x + amp * h2 * np.sin(2 * ph) * on
+    x = x + 1e-4 * np.random.default_rng(3).normal(size=n)
+    nb = int(BLOCK_S * FS)
+    for i in range(0, n - nb + 1, nb):
+        why = mon(i / FS + BLOCK_S, x[i:i + nb])
+        if why:
+            return why, i / FS + BLOCK_S
+    return None, None
+sw1 = [{"t0": 1.0, "T": 7.0, "f0": 35.0, "f1": 200.0}]
+m = SF.SafetyMonitor(lfe_sweeps=sw1); why, tstop = drive(m)
+check("a clean swept fundamental: no stop, nothing noted", why is None and not m.transients, f"({why})")
+m = SF.SafetyMonitor(lfe_sweeps=sw1); why, tstop = drive(m, h2=10 ** (-15 / 20), h2_from=3.0, h2_to=3.2)
+check("a 0.2 s bang at -15 dBc (above the limit) does NOT stop the sweep", why is None, f"({why})")
+check("... but it is noted as a short over-limit reading", len(m.transients) >= 1 and max(x["dbc"] for x in m.transients) > -20, str(m.transients))
+m = SF.SafetyMonitor(lfe_sweeps=sw1); why, tstop = drive(m, h2=10 ** (-15 / 20), h2_from=3.0, h2_to=5.0)
+check("2 s of -15 dBc second harmonic DOES stop the sweep", why is not None and "harmonic" in why and "for" in why, f"({why})")
+check("... after the persistence time, not at the first reading", tstop is not None and tstop - 3.0 >= SF.HARMONIC_PERSIST_S, f"(stopped {None if tstop is None else tstop - 3.0:.2f} s after onset)")
+m = SF.SafetyMonitor(lfe_sweeps=sw1); why, tstop = drive(m, h2=10 ** (-3 / 20), h2_from=3.0, h2_to=4.0)
+check("gross distortion (-3 dBc) stops at once, without waiting for the persistence time", why is not None and "immediate" in why and tstop - 3.0 < SF.HARMONIC_PERSIST_S, f"({why}, {None if tstop is None else round(tstop - 3.0, 2)} s)")
+with tempfile.TemporaryDirectory() as _d:
+    m = SF.SafetyMonitor(lfe_sweeps=sw1, dump_dir=_d); why, tstop = drive(m, h2=10 ** (-15 / 20), h2_from=3.0, h2_to=5.0)
+    from scipy.io import wavfile as _wf
+    _fs, _x = _wf.read(os.path.join(_d, "stop-last2s.wav")); _j = json.load(open(os.path.join(_d, "stop.json")))
+    check("a harmonic stop saves the last 2 s of the mic and a stop.json next to the run", _fs == FS and len(_x) == 2 * FS and "stop-last2s.wav" in why and _j["dbc"] > -20 and abs(_j["f_hz"] - 40) < 60, f"({len(_x)} samples, {_j})")
+
 # ---- status writer / control ---------------------------------------------------------------------------------------------------------------------
 with tempfile.TemporaryDirectory() as td:
     sw = SF.StatusWriter(td, "20261026-091500", "single", True, 1)

@@ -81,6 +81,7 @@ class Run:
         self.status.update(state=state, step=step, message=message, **kw)
 
     def monitor(self, **kw):
+        kw.setdefault("dump_dir", self.dir)
         return SF.SafetyMonitor(control=self.control, status=self.status, **kw)
 
     def check_abort(self):
@@ -242,6 +243,11 @@ class Run:
             self.st("sweeping", f"position {k + 1}/{total}: {label}", "playing sync chirps and sweeps", base, position=k + 1, level_dbfs=self.sweep_level)
             mon = _StepMonitor(self.monitor(lfe_sweeps=sweeps, level_dbfs=self.sweep_level), self, tl, base, 0.7 / total, k + 1, total, label)
             cap = self.play(tl.render(), "main", mon, pre_s=1.0, post_s=1.0)
+            if mon.inner.transients:
+                tr = mon.inner.transients
+                self.say(f"position {k + 1}: {len(tr)} short over-limit sub-harmonic reading(s) ignored (each shorter than {SF.HARMONIC_PERSIST_S:g} s, worst "
+                         f"{max(x['dbc'] for x in tr):.1f} dBc): most likely room noise, not the sub")
+                self.details.setdefault("harmonic_transients", []).append({"position": k + 1, "events": tr})
             after = self.noise_reference(k, "after", base)
             segs = [x for x in (before, after) if x is not None]
             if len(segs) == 2:
