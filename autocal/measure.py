@@ -12,7 +12,11 @@ from .stimulus import HW_ORDER, sweep_at_level, chirp
 
 FS = IR.FS
 DEAD_SNR_DB = 8.0              # below this the slot holds no usable signal: the channel is reported dead
-SNR_ABORT_40HZ_DB = 25.0       # plan section 4: abort if the SNR at 40 Hz is below this
+SNR_ABORT_LFE_40HZ_DB = 15.0   # abort if the sub (the main bass source) has less SNR than this at 35-45 Hz
+SNR_FIT_MIN_40HZ_DB = 20.0     # a channel below this at 35-45 Hz is left out of the bass-fit average (and warned about)
+# Rig data 2026-10-26 (single position, -20 dBFS cap): FL/FR/SR 28.5-29.6 dB, FC 22.8, LFE 20.2, SL 17.5 at 35-45 Hz. The first gate
+# (25 dB for every channel, a guess from the plan) stopped a run whose broadband SNR was 33-43 dB and whose bass fit barely
+# depends on the small satellites at 40 Hz.
 SNR_WARN_DB = 30.0
 PILOT_TOL_MS = 1.0
 

@@ -233,10 +233,15 @@ class Run:
                 raise RunAborted(f"position {k + 1}: {e}", "error")
             if not self.cfg.dry and not self.be.simulated:
                 IR.write_wav24(os.path.join(self.dir, "raw", f"pos{k + 1}.wav"), cap.x)
-            bad = [n for n, c in pd.ch.items() if c.snr40_db is not None and not c.dead and c.snr40_db < M.SNR_ABORT_40HZ_DB]
-            if bad:
-                raise RunAborted(f"SNR at 40 Hz below {M.SNR_ABORT_40HZ_DB:.0f} dB for {', '.join(bad)} ("
-                                 + ", ".join(f"{n} {pd.ch[n].snr40_db:.0f} dB" for n in bad) + "): too quiet or too noisy for a trustworthy bass fit", "error")
+            lfe = pd.ch.get("LFE")
+            if lfe is not None and lfe.snr40_db is not None and not lfe.dead and lfe.snr40_db < M.SNR_ABORT_LFE_40HZ_DB:
+                raise RunAborted(f"SNR at 40 Hz for the sub (LFE) is {lfe.snr40_db:.0f} dB, below {M.SNR_ABORT_LFE_40HZ_DB:.0f} dB: "
+                                 "too quiet or too noisy for a trustworthy bass fit", "error")
+            bass = [n for n in PF.BASS_CH if n in pd.ch and not pd.ch[n].dead and pd.ch[n].snr40_db is not None]
+            weak = [n for n in bass if pd.ch[n].snr40_db < M.SNR_FIT_MIN_40HZ_DB]
+            if bass and len(weak) * 2 >= len(bass):
+                raise RunAborted(f"SNR at 40 Hz below {M.SNR_FIT_MIN_40HZ_DB:.0f} dB for {len(weak)} of {len(bass)} bass channels ("
+                                 + ", ".join(f"{n} {pd.ch[n].snr40_db:.0f} dB" for n in weak) + "): too quiet or too noisy for a trustworthy bass fit", "error")
             if ref_pos is not None:
                 moved = max((abs(pd.ch[n].arrival_ms - ref_pos.ch[n].arrival_ms) for n in ("FR", "SL", "SR")
                              if n in pd.ch and n in ref_pos.ch and not pd.ch[n].dead), default=0.0)

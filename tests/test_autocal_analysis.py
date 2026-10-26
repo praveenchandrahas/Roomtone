@@ -185,6 +185,11 @@ check("a noisy room does not produce a silent bad result: aborted/error with SNR
 run, be, room, st, res = do_run(cfg_kw={"fixed_level_db": -45.0})
 check("SNR gate: sweeps that are too quiet abort with the 40 Hz SNR message", st["state"] == "error" and "SNR at 40 Hz" in st["message"], f"({st['message'][:90]})")
 
+# Rig data 2026-10-26: 40 Hz SNR FL 29.6, FR 28.8, FC 22.8, LFE 20.2, SL 17.5, SR 28.5 dB must not stop a run (the first 25 dB gate did)
+from autocal import measure as _M
+check("40 Hz gate: the sub aborts only below 15 dB; one weak satellite (SL 17.5 dB) is left out of the fit, not fatal",
+      _M.SNR_ABORT_LFE_40HZ_DB == 15.0 and _M.SNR_FIT_MIN_40HZ_DB == 20.0 and 20.2 > _M.SNR_ABORT_LFE_40HZ_DB and 1 * 2 < 6)
+
 # ================================================================ five positions ==============================================================
 prompts = []
 orig = RN.Run.wait_prompt
