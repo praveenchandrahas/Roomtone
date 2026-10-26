@@ -168,6 +168,7 @@ with tempfile.TemporaryDirectory() as td:
         elif sys.argv[1:3] == ["list", "sink-inputs"]:
             # CamillaDSP's own playback node is always there (8ch float32): it must NOT count as another stream
             print('Sink Input #74437\\n\\tDriver: PipeWire\\n\\tSample Specification: float32le 8ch 48000Hz\\n\\tProperties:\\n\\t\\tmedia.name = "camilladsp-playback"\\n\\t\\tnode.name = "camilladsp-playback"\\n\\t\\tapplication.name = "camilladsp"\\n')
+            if __import__("os").environ.get("FAKE_ENGINE"): print('Sink Input #92533\\n\\tDriver: PipeWire\\n\\tProperties:\\n\\t\\tapplication.name = "pw-cat"\\n\\t\\tnode.name = "theater-upmix-out"\\n')
             if __import__("os").environ.get("FAKE_BUSY"): print('Sink Input #77\\n\\tDriver: PipeWire\\n\\tProperties:\\n\\t\\tapplication.name = "mpv"\\n\\t\\tmedia.name = "film.mkv"\\n')
         '''))
     plink = os.path.join(td, "fake-pw-link")
@@ -195,6 +196,9 @@ with tempfile.TemporaryDirectory() as td:
     os.environ["FAKE_BUSY"] = "1"
     check("PipewireBackend preflight reports another stream on the sink (mpv) but not CamillaDSP's own playback node", pb.preflight()["other_streams"] == ["77:mpv"], f"({pb.preflight()['other_streams']})")
     del os.environ["FAKE_BUSY"]
+    os.environ["FAKE_ENGINE"] = "1"
+    check("the adaptive engine's pw-cat stream is named after its node (theater-upmix-out), so the stop message can explain it", pb.preflight()["other_streams"] == ["92533:theater-upmix-out"], f"({pb.preflight()['other_streams']})")
+    del os.environ["FAKE_ENGINE"]
     check("a wrong MIC name gives mic=None and a note", PipewireBackend(mic="nope", pw_play=play, pw_record=rec, pactl=pactl, pw_link=plink, workdir=td).preflight()["mic"] is None)
     x = np.zeros((int(0.6 * FS), 8)); x[:, 0] = S.pink_burst(-30, dur=0.6)
     t0 = time.monotonic()

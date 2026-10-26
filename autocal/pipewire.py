@@ -94,7 +94,8 @@ class PipewireBackend(Backend):
             names = [props.get(k, "") for k in ("application.name", "node.name", "media.name")]
             if any("camilladsp" in n.lower() for n in names):
                 continue
-            streams.append(f"{idx}:{next((n for n in names if n), '?')}")
+            engine = next((n for n in names if n.startswith("theater-upmix")), None)      # the adaptive engine's own pw-cat streams
+            streams.append(f"{idx}:{engine or next((n for n in names if n), '?')}")
         return streams
 
     def current_room(self):

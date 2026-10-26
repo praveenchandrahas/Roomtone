@@ -110,7 +110,11 @@ class Run:
         if not pf.get("mic"):
             raise RunAborted("no measurement microphone found", "error")
         if pf.get("other_streams"):
-            raise RunAborted("another audio stream is active on the output (" + ", ".join(pf["other_streams"]) + "): close mpv/Chrome and retry", "error")
+            hint = ""
+            if any("theater-upmix" in x or "pw-cat" in x for x in pf["other_streams"]):
+                hint = (" The adaptive upmix engine is still running: the router keeps the stereo profile for about 2 minutes after stereo audio stops. "
+                        "Wait until `eq status` shows 'Profile: film' (and no running engine), or pin it with `eq mode film` for the measurement and `eq mode auto` afterwards.")
+            raise RunAborted("another audio stream is active on the output (" + ", ".join(pf["other_streams"]) + "): close mpv/Chrome and retry." + hint, "error")
         if pf.get("mic_muted"):
             raise RunAborted(f"the microphone {pf['mic']} is muted in PipeWire: unmute it and set the level you calibrated (./rec.sh gain 60%)", "error")
         lvl = pf.get("mic_level_pct")
