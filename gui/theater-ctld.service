@@ -1,0 +1,14 @@
+[Unit]
+Description=Theatre status and control page (localhost only)
+After=theater-router.service
+Wants=theater-router.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/theater-ctld
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

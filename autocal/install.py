@@ -68,7 +68,7 @@ def write_proposed_config(room_path, out_path):
     Returns (ok, note)."""
     se = PF.find_set_eq()
     if not se:
-        return False, "set-eq.py not found (set SET_EQ=/path/to/set-eq.py or keep linux-theater-dsp next to theater-measurement)"
+        return False, "set-eq.py not found (set SET_EQ=/path/to/set-eq.py or keep linux-theater-dsp next to this repository (roomtone))"
     try:
         r = subprocess.run([sys.executable, se, f"--room={room_path}", f"--write-config={out_path}"], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:

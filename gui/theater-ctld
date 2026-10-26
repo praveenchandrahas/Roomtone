@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""theater-ctld: local status and control for the theatre rig (localhost only).
+
+  theater-ctld                 serve http://127.0.0.1:8765  (THEATER_CTL_PORT to change)
+  theater-ctld --print-token   print the write token and exit
+
+It is a thin layer. It never touches audio or CamillaDSP's config itself:
+  status   = `eq status --json` (cached for about a second) + read-only CamillaDSP websocket queries (if the websocket is on)
+  actions  = a fixed table that runs `eq on|off`, `eq mode X`, `eq flavour KIND NAME`, `eq engine on|off` (argv list, no shell)
+The router stays the only thing that changes the audio path; if this daemon dies, audio is not affected.
+
+Safety: bound to 127.0.0.1 only (no LAN option). Every request must carry a Host header of 127.0.0.1:PORT or localhost:PORT (DNS rebinding),
+a cross-origin Origin is refused, and POST needs the token (a random string kept in a 0600 file, handed only to the page this daemon serves).
+Actions that cause about a second of silence (mode, flavour, engine) or make the sound louder (eq off) need "confirm": true while mpv is playing.
+"""
+import base64, hmac, json, os, secrets, shutil, socket, struct, subprocess, sys, threading, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+VERSION = 1
+PORT = int(os.environ.get("THEATER_CTL_PORT", "8765"))
+EQ = os.environ.get("THEATER_EQ") or shutil.which("eq") or os.path.expanduser("~/.local/bin/eq")
+STATE_DIR = os.path.expanduser(os.environ.get("THEATER_STATE_DIR", "~/.local/state/theater"))
+TOKEN_FILE = os.path.join(STATE_DIR, "ctl-token")
+WS_HOST, _, _ws_port = os.environ.get("THEATER_CAMILLA_WS", "127.0.0.1:1234").partition(":")
+WS_PORT = int(_ws_port or 1234)
+WEB_DIR = os.environ.get("THEATER_WEB_DIR") or next((d for d in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "web"),
+                                                                   os.path.expanduser("~/.local/share/theater-ctld")) if os.path.isdir(d)), "")
+ACTION_TIMEOUT = 30
+# keep in step with theater-route (tests/test_ctld.py compares them)
+FLAVOURS = {"stereo": ("voice", "balanced", "wide"), "bed": ("subtle", "balanced", "wide")}
+PMODES = ("auto", "film", "stereo", "bed")
+# CamillaDSP websocket: read-only commands only, enforced here
+WS_READ_ONLY = ("GetState", "GetCaptureRate", "GetBufferLevel", "GetClippedSamples", "GetProcessingLoad",
+                "GetCaptureSignalPeak", "GetPlaybackSignalPeak", "GetVersion")
+
+
+# ------------------------------------------------------------------ a minimal websocket client (RFC 6455, text frames only)
+def _recv_exact(s, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk:
+            raise OSError("connection closed")
+        buf += chunk
+    return buf
+
+
+def ws_read_frame(s):
+    b1, b2 = _recv_exact(s, 2)
+    op, ln = b1 & 0x0F, b2 & 0x7F
+    if ln == 126:
+        ln = struct.unpack(">H", _recv_exact(s, 2))[0]
+    elif ln == 127:
+        ln = struct.unpack(">Q", _recv_exact(s, 8))[0]
+    if ln > 1 << 20:
+        raise OSError("frame too large")
+    mask = _recv_exact(s, 4) if b2 & 0x80 else None
+    data = _recv_exact(s, ln)
+    if mask:
+        data = bytes(c ^ mask[i % 4] for i, c in enumerate(data))
+    return op, data
+
+
+def ws_send_text(s, text):
+    data = text.encode()
+    head = bytes([0x81])
+    if len(data) < 126:
+        head += bytes([0x80 | len(data)])
+    else:
+        head += bytes([0x80 | 126]) + struct.pack(">H", len(data))
+    mask = os.urandom(4)
+    s.sendall(head + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(data)))
+
+
+def ws_query(commands, host=None, port=None, timeout=1.0):
+    """Ask CamillaDSP's websocket a list of read-only commands. Returns {command: value or None}; raises OSError if it cannot be reached."""
+    bad = [c for c in commands if c not in WS_READ_ONLY]
+    if bad:
+        raise ValueError("not a read-only command: " + ", ".join(bad))
+    s = socket.create_connection((host or WS_HOST, port or WS_PORT), timeout=timeout)
+    try:
+        s.settimeout(timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        s.sendall((f"GET / HTTP/1.1\r\nHost: {host or WS_HOST}:{port or WS_PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                   f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            resp += _recv_exact(s, 1)
+            if len(resp) > 8192:
+                raise OSError("bad handshake")
+        if b" 101 " not in resp.split(b"\r\n", 1)[0]:
+            raise OSError("websocket handshake refused")
+        out = {}
+        for c in commands:
+            ws_send_text(s, json.dumps(c))
+            while True:
+                op, data = ws_read_frame(s)
+                if op == 0x1:
+                    break
+                if op == 0x8:
+                    raise OSError("closed by CamillaDSP")
+            try:
+                reply = json.loads(data.decode())
+                body = reply.get(c, {}) if isinstance(reply, dict) else {}
+                out[c] = body.get("value") if body.get("result") == "Ok" else None
+            except (ValueError, AttributeError):
+                out[c] = None
+        return out
+    finally:
+        s.close()
+
+
+def live_block():
+    """Read-only DSP numbers from CamillaDSP (needs the websocket: -p 1234 -a 127.0.0.1 in the unit). Never raises."""
+    try:
+        v = ws_query(["GetState", "GetCaptureRate", "GetBufferLevel", "GetClippedSamples", "GetProcessingLoad",
+                      "GetCaptureSignalPeak", "GetPlaybackSignalPeak"])
+    except (OSError, ValueError) as e:
+        return {"ok": False, "reason": f"CamillaDSP websocket not reachable ({e.__class__.__name__}); add -p {WS_PORT} -a 127.0.0.1 to the unit"}
+    return {"ok": True, "state": v["GetState"], "capture_rate": v["GetCaptureRate"], "buffer_level": v["GetBufferLevel"],
+            "clipped_samples": v["GetClippedSamples"], "load_percent": v["GetProcessingLoad"],
+            "capture_peak_db": v["GetCaptureSignalPeak"], "playback_peak_db": v["GetPlaybackSignalPeak"]}
+
+
+# ------------------------------------------------------------------ status snapshot
+class Snapshot:
+    """Caches one combined status for about a second, so many clients do not run many `eq status` commands."""
+    def __init__(self, ttl=1.0):
+        self.ttl, self.lock, self.t, self.data, self.underruns = ttl, threading.Lock(), 0.0, None, {"t": 0.0, "n": None}
+
+    def _underruns(self):
+        if time.time() - self.underruns["t"] < 10:
+            return self.underruns["n"]
+        self.underruns["t"] = time.time()
+        try:
+            r = subprocess.run(["journalctl", "--user", "-u", "camilladsp.service", "--since", "-60s", "-o", "cat", "--no-pager", "-q"],
+                               capture_output=True, text=True, timeout=4)
+            self.underruns["n"] = r.stdout.count("buffer empty") if r.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            self.underruns["n"] = None
+        return self.underruns["n"]
+
+    def get(self):
+        with self.lock:
+            if self.data is not None and time.time() - self.t < self.ttl:
+                return self.data
+            try:
+                r = subprocess.run([EQ, "status", "--json"], capture_output=True, text=True, timeout=6)
+                d = json.loads(r.stdout) if r.returncode == 0 else {"error": (r.stderr or "eq status failed").strip()[:200]}
+            except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+                d = {"error": f"eq status unavailable: {e.__class__.__name__}"}
+            d["live"] = live_block()
+            playing = bool(d.get("apps")) or bool((d.get("mpv") or {}).get("playing"))
+            # CamillaDSP logs "buffer empty, outputting silence" about every 21 ms while nothing is playing (verified on the rig 2026-10-26),
+            # so the count only means something while audio is playing; when idle it is reported as unknown.
+            d["underruns_60s"] = self._underruns() if playing else None
+            d["ctld"] = {"version": VERSION}
+            self.data, self.t = d, time.time()
+            return d
+
+
+SNAP = Snapshot()
+ACTION_LOCK = threading.Lock()
+
+
+# ------------------------------------------------------------------ actions: a fixed table, nothing else
+def plan_action(req, status):
+    """Validate a request. Returns (argv tail, current-value check, needs_confirm, note) or raises ValueError(message)."""
+    a = req.get("action")
+    playing = bool(status.get("mpv", {}).get("playing")) or any(x.get("patched") for x in status.get("apps", []))
+    dsp = status.get("dsp", {})
+    if a == "eq":
+        v = req.get("value")
+        if v not in ("on", "off"):
+            raise ValueError("eq: value must be on or off")
+        return [v], status.get("eq", {}).get("switch") == v, (v == "off" and playing), "EQ off is louder than EQ on"
+    if a == "mode":
+        v = req.get("value")
+        if v not in PMODES:
+            raise ValueError("mode: value must be one of " + ", ".join(PMODES))
+        return ["mode", v], dsp.get("pmode") == v, playing, "a profile switch can cause about 1 second of silence"
+    if a == "flavour":
+        k, n = req.get("kind"), req.get("value")
+        if k not in FLAVOURS or n not in FLAVOURS[k]:
+            raise ValueError("flavour: kind must be stereo or bed, value one of " + ", ".join(sorted({x for t in FLAVOURS.values() for x in t})))
+        return ["flavour", k, n], dsp.get("flavours", {}).get(k) == n, playing, "a profile switch can cause about 1 second of silence"
+    if a == "engine":
+        v = req.get("value")
+        if v not in ("on", "off"):
+            raise ValueError("engine: value must be on or off")
+        cur = dsp.get("engine", {}).get("state")
+        return ["engine", v], cur == v, playing, "a profile switch can cause about 1 second of silence"
+    raise ValueError("unknown action")
+
+
+def run_action(req):
+    """Returns (http status, body)."""
+    status = SNAP.get()
+    if "error" in status and "eq" not in status:
+        return 503, {"ok": False, "error": status["error"]}
+    try:
+        argv, already, needs_confirm, note = plan_action(req, status)
+    except ValueError as e:
+        return 400, {"ok": False, "error": str(e)}
+    if already:
+        return 200, {"ok": True, "noop": True, "message": "already set"}
+    if needs_confirm and req.get("confirm") is not True:
+        return 409, {"ok": False, "error": "confirm", "message": note}
+    if not ACTION_LOCK.acquire(timeout=1):
+        return 429, {"ok": False, "error": "another action is running"}
+    try:
+        label = " ".join(argv)
+        print(f"action: eq {label}", flush=True)
+        try:
+            r = subprocess.run([EQ, *argv], capture_output=True, text=True, timeout=ACTION_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return 500, {"ok": False, "error": f"eq failed: {e.__class__.__name__}"}
+        SNAP.t = 0.0
+        if shutil.which("notify-send"):
+            try:
+                subprocess.run(["notify-send", "-a", "Home theatre", "-t", "1500", "Control", f"eq {label}"], timeout=2, capture_output=True)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        return (200 if r.returncode == 0 else 500), {"ok": r.returncode == 0, "output": (r.stdout + r.stderr).strip()[-400:]}
+    finally:
+        ACTION_LOCK.release()
+
+
+# ------------------------------------------------------------------ HTTP
+def load_token():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    try:
+        with open(TOKEN_FILE) as f:
+            t = f.read().strip()
+            if len(t) >= 32:
+                return t
+    except OSError:
+        pass
+    t = secrets.token_urlsafe(32)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(t + "\n")
+    return t
+
+
+TOKEN = None
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "theater-ctld"
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def _host_ok(self):
+        return (self.headers.get("Host") or "").lower() in (f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}")
+
+    def _origin_ok(self):
+        o = self.headers.get("Origin")
+        return o is None or o.lower() in (f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}")
+
+    def _send(self, code, body, ctype="application/json", extra=None):
+        data = body if isinstance(body, bytes) else (json.dumps(body) if not isinstance(body, str) else body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype + ("; charset=utf-8" if ctype.startswith("text") or ctype == "application/json" else ""))
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _gate(self):
+        if not self._host_ok():
+            self._send(421, {"error": "bad Host header"}); return False
+        if not self._origin_ok():
+            self._send(403, {"error": "cross-origin request refused"}); return False
+        return True
+
+    def do_GET(self):
+        if not self._gate():
+            return
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
+            try:
+                html = open(os.path.join(WEB_DIR, "index.html"), "rb").read()
+            except OSError:
+                return self._send(500, {"error": "web/index.html not found (THEATER_WEB_DIR)"})
+            return self._send(200, html.replace(b"__TOKEN__", TOKEN.encode()), "text/html")
+        if path == "/v1/status":
+            return self._send(200, SNAP.get())
+        if path == "/v1/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            last, beat = None, 0
+            try:
+                while True:
+                    cur = json.dumps(SNAP.get(), sort_keys=True)
+                    stripped = json.dumps({k: v for k, v in json.loads(cur).items() if k != "time"}, sort_keys=True)
+                    if stripped != last or beat >= 5:
+                        self.wfile.write(f"data: {cur}\n\n".encode()); self.wfile.flush()
+                        last, beat = stripped, 0
+                    time.sleep(1.0); beat += 1
+            except (OSError, ValueError):
+                return
+        self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        if not self._gate():
+            return
+        if self.path.split("?", 1)[0] != "/v1/action":
+            return self._send(404, {"error": "not found"})
+        if not hmac.compare_digest((self.headers.get("X-Theater-Token") or "").encode(), TOKEN.encode()):
+            return self._send(401, {"error": "token missing or wrong"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            req = json.loads(self.rfile.read(min(n, 4096)).decode() or "{}")
+            if not isinstance(req, dict):
+                raise ValueError
+        except (ValueError, OSError):
+            return self._send(400, {"error": "body must be a JSON object"})
+        code, body = run_action(req)
+        self._send(code, body)
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def main():
+    global TOKEN
+    TOKEN = load_token()
+    if "--print-token" in sys.argv:
+        print(TOKEN); return
+    srv = Server(("127.0.0.1", PORT), Handler)
+    print(f"theater-ctld {VERSION} on http://127.0.0.1:{srv.server_port}  (eq: {EQ}; web: {WEB_DIR or 'missing'})", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

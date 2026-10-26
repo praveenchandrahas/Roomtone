@@ -189,7 +189,7 @@ class PipewireBackend(Backend):
         k = int(os.environ.get("AUTOCAL_MIC_CHANNEL", "0"))
         return blk[:, k if k < blk.shape[1] else 0]
 
-    def meter(self, seconds=20.0, emit=print):
+    def meter(self, seconds=20.0, emit=print, collect=None):
         """Live mic levels, no sound played: per 100 ms the rms of each channel and of their sum, so a dead, muted or cancelling input is visible."""
         rec = self._start_recorder(); q = queue.Queue()
         th = threading.Thread(target=self._reader, args=(rec, q), daemon=True); th.start()
@@ -207,6 +207,8 @@ class PipewireBackend(Backend):
                 if isinstance(blk, Exception):
                     raise blk
                 pend = np.concatenate([pend, blk]) if pend.shape[1] == blk.shape[1] else blk
+                if collect is not None:
+                    collect.append(blk[:, 0].copy())
                 while len(pend) >= 4800:
                     b, pend = pend[:4800], pend[4800:]
                     rms = np.sqrt(np.mean(b ** 2, 0)); mix = np.sqrt(np.mean(np.mean(b, 1) ** 2))

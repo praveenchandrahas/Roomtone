@@ -116,12 +116,50 @@ def cmd_mic(a):
     from .pipewire import PipewireBackend
     be = PipewireBackend()
     print(f"microphone: {be.mic or '(set MIC=<name>, see ./rec.sh list)'}; {a.seconds:g} s; tap the mic or talk into it. Nothing is played.")
+    got = [] if a.spectrum else None
     try:
-        fmt = be.meter(a.seconds)
+        fmt = be.meter(a.seconds, emit=(lambda *_: None) if a.spectrum else print, collect=got)
     except BackendError as e:
         print(f"STOPPED: {e}", file=sys.stderr); return 1
     print(f"pw-record delivered: {fmt}")
+    if a.spectrum:
+        import numpy as np
+        x = np.concatenate(got) if got else np.zeros(0)
+        print(spectrum_report(x))
     return 0
+
+
+def spectrum_report(x, fs=48000):
+    """Noise-floor report from a mic recording: level per octave band (min / median / max over 1 s windows, so a cycling source shows a wide spread),
+    and the strongest narrow tone (mains hum shows here). Pure analysis; used by `autocal mic --spectrum`."""
+    import numpy as np
+    if len(x) < 2 * fs:
+        return "spectrum: need at least 2 s of audio"
+    x = x - np.mean(x)
+    win = fs
+    nwin = len(x) // win
+    centres = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000]
+    lines = ["noise floor per octave band (dBFS rms over 1 s windows):", f"  {'band Hz':>8}  {'min':>6} {'median':>7} {'max':>6}  {'spread':>6}"]
+    freqs = np.fft.rfftfreq(win, 1 / fs)
+    hann = np.hanning(win)
+    spec = np.array([np.abs(np.fft.rfft(x[i * win:(i + 1) * win] * hann)) ** 2 for i in range(nwin)])
+    for c in centres:
+        lo, hi = c / 2 ** 0.5, c * 2 ** 0.5
+        m = (freqs >= lo) & (freqs < hi)
+        pw = spec[:, m].sum(1) * 2 / (np.sum(hann ** 2) * win)
+        d = 10 * np.log10(np.maximum(pw, 1e-18))
+        lines.append(f"  {c:>8g}  {d.min():6.1f} {np.median(d):7.1f} {d.max():6.1f}  {d.max() - d.min():6.1f}")
+    avg = spec.mean(0)
+    best = None
+    for k in range(5, len(avg) - 5):
+        if freqs[k] > 2000:
+            break
+        nb = np.median(np.r_[avg[k - 5:k - 1], avg[k + 2:k + 6]])
+        r = 10 * np.log10(avg[k] / max(nb, 1e-30))
+        if avg[k] >= avg[k - 1] and avg[k] >= avg[k + 1] and (best is None or r > best[1]):
+            best = (freqs[k], r)
+    lines.append(f"strongest narrow tone: {best[0]:.0f} Hz, {best[1]:.0f} dB above its neighbours" + ("  (a hum or whine: look for the source)" if best[1] >= 15 else "  (nothing stands out: broadband noise)") if best else "no tone found")
+    return "\n".join(lines)
 
 
 def cmd_verify(a):
@@ -164,6 +202,7 @@ def parser():
         s.add_argument("--sim-sub-distortion", type=float, default=None, help=argparse.SUPPRESS)
         s.add_argument("--sim-other-stream", action="store_true", help=argparse.SUPPRESS)
     s = sub.add_parser("mic", help="live microphone levels per channel (plays nothing): is the mic alive, muted, or cancelling?")
+    s.add_argument("--spectrum", action="store_true", help="instead of the live meter, print the noise floor per octave band and the strongest narrow tone")
     s.add_argument("--seconds", type=float, default=20.0)
     s = sub.add_parser("report", help="regenerate report.html for a run"); common(s); s.add_argument("run")
     s = sub.add_parser("apply", help="install a run's proposal with a trial (explicit; backs up first)"); common(s); s.add_argument("run")
