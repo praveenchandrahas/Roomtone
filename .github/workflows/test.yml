@@ -11,8 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: check out linux-theater-dsp (public, read-only) so the tests that need set-eq.py run instead of skipping
+        uses: actions/checkout@v4
+        with:
+          repository: praveenchandrahas/linux-theater-dsp
+          path: deps/linux-theater-dsp
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install numpy scipy
       - run: bash tests/run.sh
+        env:
+          SET_EQ: ${{ github.workspace }}/deps/linux-theater-dsp/scripts/set-eq.py

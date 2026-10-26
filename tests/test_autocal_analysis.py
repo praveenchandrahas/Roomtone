@@ -76,7 +76,10 @@ check("no polarity problems in the default room", not any(r["polarity"]["flip_pr
 check("LFE is reported (rough arrival, level) but its trim is untouched", rows["LFE"]["trim_new_db"] == rows["LFE"]["trim_now_db"] and any("Z906" in n for n in rows["LFE"]["notes"]))
 rp = json.load(open(os.path.join(run.dir, "room.proposed.json")))
 check("room.proposed.json is a valid room.json carrying the residual change", PF.validate_room(rp) and rp["align"]["SL"]["delay_ms"] == rows["SL"]["delay_new_ms"])
-check("config.proposed.yml was built by set-eq.py", os.path.exists(os.path.join(run.dir, "config.proposed.yml")) and os.path.getsize(os.path.join(run.dir, "config.proposed.yml")) > 500)
+if PF.find_set_eq():
+    check("config.proposed.yml was built by set-eq.py", os.path.exists(os.path.join(run.dir, "config.proposed.yml")) and os.path.getsize(os.path.join(run.dir, "config.proposed.yml")) > 500)
+else:
+    print("SKIP config.proposed.yml (set-eq.py not found: clone linux-theater-dsp next to this repository or set SET_EQ)")
 check("report.html is static and self-contained (no scripts, no external requests)", "<script" not in open(os.path.join(run.dir, "report.html")).read() and "http://" not in open(os.path.join(run.dir, "report.html")).read()
       and "https://" not in open(os.path.join(run.dir, "report.html")).read())
 b = res["bass"]
