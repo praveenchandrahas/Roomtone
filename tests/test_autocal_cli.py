@@ -115,10 +115,11 @@ import numpy as np
 from autocal.cli import spectrum_report
 _fs = 48000; _t = np.arange(15 * _fs) / _fs; _x = np.random.default_rng(0).normal(0, 0.001, len(_t)) + 0.0005 * np.sin(2 * np.pi * 50 * _t) * (1 + np.sin(2 * np.pi * _t / 8))
 _rep = spectrum_report(_x)
-_row = {float(l.split()[0]): [float(v) for v in l.split()[1:4]] for l in _rep.splitlines()[2:-1]}
+_row = {float(l.split()[0]): [float(v) for v in l.split()[1:4]] for l in _rep.splitlines()[2:-1] if l.split()[0] != "35-45"}
 check("spectrum: white noise of -60 dBFS reads -66 dBFS in the 8 kHz octave", abs(_row[8000.0][1] + 66.3) < 0.5, str(_row[8000.0]))
 check("spectrum: the cycling 63 Hz band shows a wide spread, the steady bands do not", _row[63.0][2] - _row[63.0][0] > 15 and _row[1000.0][2] - _row[1000.0][0] < 2)
 check("spectrum: the 50 Hz hum is found as a narrow tone", "strongest narrow tone: 50 Hz" in _rep and "hum or whine" in _rep, _rep.splitlines()[-1])
+check("spectrum: the 35-45 Hz row is printed", "35-45" in _rep and "bass gate" in _rep)
 check("spectrum: too little audio gives a clear message", "need at least 2 s" in spectrum_report(_x[:1000]))
 shutil.rmtree(TMP, ignore_errors=True)
 finish("test_autocal_cli")

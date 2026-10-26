@@ -115,7 +115,8 @@ def cmd_mic(a):
     from .backend import BackendError
     from .pipewire import PipewireBackend
     be = PipewireBackend()
-    print(f"microphone: {be.mic or '(set MIC=<name>, see ./rec.sh list)'}; {a.seconds:g} s; tap the mic or talk into it. Nothing is played.")
+    print(f"microphone: {be.mic or '(set MIC=<name>, see ./rec.sh list)'}; {a.seconds:g} s; "
+          + ("stay quiet and keep the room as it is for a measurement. Nothing is played." if a.spectrum else "tap the mic or talk into it. Nothing is played."))
     got = [] if a.spectrum else None
     try:
         fmt = be.meter(a.seconds, emit=(lambda *_: None) if a.spectrum else print, collect=got)
@@ -130,7 +131,7 @@ def cmd_mic(a):
 
 
 def spectrum_report(x, fs=48000):
-    """Noise-floor report from a mic recording: level per octave band (min / median / max over 1 s windows, so a cycling source shows a wide spread),
+    """Noise-floor report from a mic recording: level per octave band (10th / median / 90th percentile over 1 s windows, so one-off bangs do not count but a cycling source shows a wide spread),
     and the strongest narrow tone (mains hum shows here). Pure analysis; used by `autocal mic --spectrum`."""
     import numpy as np
     if len(x) < 2 * fs:
@@ -139,16 +140,17 @@ def spectrum_report(x, fs=48000):
     win = fs
     nwin = len(x) // win
     centres = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000]
-    lines = ["noise floor per octave band (dBFS rms over 1 s windows):", f"  {'band Hz':>8}  {'min':>6} {'median':>7} {'max':>6}  {'spread':>6}"]
+    lines = ["noise floor per octave band (dBFS rms over 1 s windows):", f"  {'band Hz':>8}  {'p10':>6} {'median':>7} {'p90':>6}  {'spread':>6}"]
     freqs = np.fft.rfftfreq(win, 1 / fs)
     hann = np.hanning(win)
     spec = np.array([np.abs(np.fft.rfft(x[i * win:(i + 1) * win] * hann)) ** 2 for i in range(nwin)])
-    for c in centres:
-        lo, hi = c / 2 ** 0.5, c * 2 ** 0.5
+    for c in centres + [40]:
+        lo, hi = (c / 2 ** 0.5, c * 2 ** 0.5) if c != 40 else (35.0, 45.0)
         m = (freqs >= lo) & (freqs < hi)
         pw = spec[:, m].sum(1) * 2 / (np.sum(hann ** 2) * win)
         d = 10 * np.log10(np.maximum(pw, 1e-18))
-        lines.append(f"  {c:>8g}  {d.min():6.1f} {np.median(d):7.1f} {d.max():6.1f}  {d.max() - d.min():6.1f}")
+        p10, p90 = np.percentile(d, 10), np.percentile(d, 90)
+        lines.append(f"  {('35-45' if c == 40 else format(c, 'g')):>8}  {p10:6.1f} {np.median(d):7.1f} {p90:6.1f}  {p90 - p10:6.1f}" + ("   <- the band autocal's bass gate looks at" if c == 40 else ""))
     avg = spec.mean(0)
     best = None
     for k in range(5, len(avg) - 5):
