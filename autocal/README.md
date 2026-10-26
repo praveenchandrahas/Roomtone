@@ -51,3 +51,7 @@ Checked on synthetic noise and the simulated room only; not yet on a real run.
 While the sub (LFE) sweeps, the mic is checked every 50 ms for second-harmonic distortion (a 0.3 s window, 28-100 Hz, limit -20 dBc). Until 2026-10-26 one reading over the limit stopped the sweep; one was triggered at 58 Hz by what looks like a room noise, since the same sweep's recordings never went above -28 dBc and no playback dropout was logged.
 Now the sweep stops only if the reading stays over the limit for `HARMONIC_PERSIST_S` = 0.6 s (the windows overlap, so a bang of up to about 0.3 s is shorter than that), or at once if it is worse than `HARMONIC_IMMEDIATE_DBC` = -6 dBc. **The limit (-20 dBc) and the -20 dBFS output cap are unchanged.** Short over-limit readings that were ignored are printed after the position and saved in the run's details.
 On any stop the last 2 s of the mic are saved as `stop-last2s.wav` with a `stop.json` in the run folder, so the cause can be looked at afterwards. The cost: a real distortion is now noticed up to 0.6 s later than before.
+
+## Watching a run from the browser
+
+`http://127.0.0.1:8765/autocal` (theater-ctld, see the top-level README) shows the run's `status.json` live, the past runs and their results, and offers Continue (writes `control/continue-<prompt id>`) and Stop (writes `control/abort`) for an active run. It cannot start a run or apply a proposal. It never touches the measurement code: the run folder is its whole interface.

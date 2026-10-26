@@ -11,9 +11,11 @@ The router stays the only thing that changes the audio path; if this daemon dies
 
 Safety: bound to 127.0.0.1 only (no LAN option). Every request must carry a Host header of 127.0.0.1:PORT or localhost:PORT (DNS rebinding),
 a cross-origin Origin is refused, and POST needs the token (a random string kept in a 0600 file, handed only to the page this daemon serves).
+Autocal runs are shown from the run folders (read-only); the page's only writes are the two control files autocal itself polls
+(control/continue-<prompt id>, control/abort) for a run that is active and has updated in the last 60 s. It never starts a run or applies anything.
 Actions that cause about a second of silence (mode, flavour, engine) or make the sound louder (eq off) need "confirm": true while mpv is playing.
 """
-import base64, hmac, json, os, secrets, shutil, socket, struct, subprocess, sys, threading, time
+import base64, hmac, json, os, re, secrets, shutil, socket, struct, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 VERSION = 1
@@ -260,6 +262,147 @@ def run_action(req):
         ACTION_LOCK.release()
 
 
+# ------------------------------------------------------------------ autocal runs (read-mostly; the only writes are control/continue-<prompt> and control/abort)
+ID_RE = re.compile(r"[0-9]{8}-[0-9]{6}")
+PROMPT_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
+ACTIVE_STATES = ("preflight", "ramp", "channel_id", "sweeping", "waiting_user", "analysing")
+DEAD_AFTER_S = 60          # an active run whose status.json is older than this is not running any more: no control files are written for it
+MAX_JSON = 16 * 1024 * 1024
+RUNS_KEEP = 30
+
+
+def autocal_runs_root():
+    """The folder autocal writes its runs to: $THEATER_AUTOCAL_RUNS (the installer sets it to <checkout>/runs), else the usual places. None if there is none."""
+    env = os.environ.get("THEATER_AUTOCAL_RUNS")
+    cands = [env] if env else [os.path.expanduser(f"~/sdht-workspace/{n}/runs") for n in ("roomtone", "theater-measurement")] + [os.path.expanduser("~/roomtone/runs")]
+    for c in cands:
+        if c and os.path.isdir(c):
+            return os.path.realpath(c)
+    return None
+
+
+def _read_json(path):
+    """A small JSON file, or None (missing, unreadable, half-written, a symlink, too big). Never raises."""
+    try:
+        if os.path.islink(path) or os.path.getsize(path) > MAX_JSON:
+            return None
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _run_dir(root, rid):
+    """The run's folder if rid is a well-formed id and the folder is a real directory directly inside root, else None."""
+    if not root or not isinstance(rid, str) or not ID_RE.fullmatch(rid):
+        return None
+    d = os.path.join(root, rid)
+    return d if os.path.isdir(d) and not os.path.islink(d) and os.path.dirname(os.path.realpath(d)) == root else None
+
+
+def _status_of(d):
+    st = _read_json(os.path.join(d, "status.json"))
+    if st is None:
+        return None
+    try:
+        age = max(0.0, time.time() - os.stat(os.path.join(d, "status.json")).st_mtime)
+    except OSError:
+        age = 0.0
+    st["age_s"] = round(age, 1)
+    st["stale"] = bool(st.get("state") in ACTIVE_STATES and age > DEAD_AFTER_S)
+    return st
+
+
+_verdicts = {}
+
+
+def _verdict_of(d):
+    f = os.path.join(d, "results.json")
+    try:
+        key = (f, os.stat(f).st_mtime_ns)
+    except OSError:
+        return None
+    if key not in _verdicts:
+        r = _read_json(f) or {}
+        if len(_verdicts) > 200:
+            _verdicts.clear()
+        _verdicts[key] = r.get("verdict")
+    return _verdicts[key]
+
+
+def autocal_overview():
+    root = autocal_runs_root()
+    if root is None:
+        return {"ok": True, "found": False, "runs": [], "current": None,
+                "hint": "no autocal runs folder found; set THEATER_AUTOCAL_RUNS (re-run gui/install-ctld.sh from your checkout)"}
+    runs = []
+    try:
+        names = sorted((n for n in os.listdir(root) if ID_RE.fullmatch(n)), reverse=True)
+    except OSError:
+        names = []
+    for n in names[:RUNS_KEEP]:
+        d = _run_dir(root, n)
+        if not d:
+            continue
+        rj, st = _read_json(os.path.join(d, "run.json")) or {}, _status_of(d) or {}
+        runs.append({"id": n, "created": rj.get("created"), "mode": rj.get("mode") or st.get("mode"), "simulated": rj.get("simulated", st.get("simulated")),
+                     "state": st.get("state"), "verdict": _verdict_of(d), "message": (st.get("message") or "")[:200]})
+    current = _status_of(_run_dir(root, runs[0]["id"])) if runs else None
+    return {"ok": True, "found": True, "runs_dir": root, "runs": runs, "current": current}
+
+
+def autocal_detail(rid):
+    """What the page shows for one finished run: verdict, summary, warnings, the per-channel table, the commands to type (never run from here)."""
+    root = autocal_runs_root(); d = _run_dir(root, rid)
+    if not d:
+        return 404, {"error": "no such run"}
+    r = _read_json(os.path.join(d, "results.json"))
+    if r is None:
+        return 200, {"ok": True, "id": rid, "has_results": False, "status": _status_of(d)}
+    keep = {k: r.get(k) for k in ("id", "created", "mode", "simulated", "target", "verdict", "summary", "warnings", "table", "commands")}
+    keep["bass"] = {k: (r.get("bass") or {}).get(k) for k in ("rms_to_target_before_db", "rms_to_target_after_db")}
+    keep["heights"] = (r.get("heights") or {})
+    keep["heights"] = {k: keep["heights"].get(k) for k in ("trim_new_db", "rms_to_bed_before_db", "rms_to_bed_after_db", "above_5k_matched")}
+    return 200, {"ok": True, "has_results": True, "result": keep, "status": _status_of(d)}
+
+
+def autocal_control(req):
+    """POST {action: continue|abort, run, prompt?}. Writes ONE empty file in the run's control/ folder (what the terminal's Enter and Ctrl-C map to). Returns (code, body)."""
+    a, rid = req.get("action"), req.get("run")
+    if a not in ("continue", "abort"):
+        return 400, {"error": "action must be continue or abort"}
+    root = autocal_runs_root(); d = _run_dir(root, rid)
+    if not d:
+        return 404, {"error": "no such run"}
+    st = _status_of(d)
+    if not st or st.get("state") not in ACTIVE_STATES:
+        return 409, {"error": "this run is not active"}
+    if st["stale"]:
+        return 409, {"error": f"this run has not updated for {st['age_s']:.0f} s: it is not running any more"}
+    ctl = os.path.join(d, "control")
+    if not os.path.isdir(ctl) or os.path.islink(ctl):
+        return 409, {"error": "the run has no control folder"}
+    if a == "continue":
+        pr = st.get("prompt") or {}
+        pid = pr.get("id")
+        if st.get("state") != "waiting_user" or not isinstance(pid, str) or not PROMPT_RE.fullmatch(pid):
+            return 409, {"error": "the run is not waiting for you"}
+        if req.get("prompt") != pid:
+            return 409, {"error": "the question changed; look at the page again"}
+        name = f"continue-{pid}"
+    else:
+        name = "abort"
+    try:
+        fd = os.open(os.path.join(ctl, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+        os.close(fd)
+    except FileExistsError:
+        return 200, {"ok": True, "noop": True}
+    except OSError as e:
+        return 500, {"error": f"could not write the control file ({e.__class__.__name__})"}
+    return 200, {"ok": True}
+
+
 # ------------------------------------------------------------------ HTTP
 def load_token():
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -326,6 +469,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, html.replace(b"__TOKEN__", TOKEN.encode()), "text/html")
         if path == "/v1/status":
             return self._send(200, SNAP.get())
+        if path in ("/autocal", "/autocal.html"):
+            try:
+                html = open(os.path.join(WEB_DIR, "autocal.html"), "rb").read()
+            except OSError:
+                return self._send(500, {"error": "autocal.html not found (THEATER_WEB_DIR); re-run gui/install-ctld.sh"})
+            return self._send(200, html.replace(b"__TOKEN__", TOKEN.encode()), "text/html")
+        if path == "/v1/autocal":
+            return self._send(200, autocal_overview())
+        if path == "/v1/autocal/run":
+            q = dict(p.split("=", 1) for p in (self.path.split("?", 1) + [""])[1].split("&") if "=" in p)
+            code, body = autocal_detail(q.get("id", ""))
+            return self._send(code, body)
         if path == "/v1/levels":
             return self._levels()
         if path == "/v1/events":
@@ -387,7 +542,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._gate():
             return
-        if self.path.split("?", 1)[0] != "/v1/action":
+        ppath = self.path.split("?", 1)[0]
+        if ppath not in ("/v1/action", "/v1/autocal/control"):
             return self._send(404, {"error": "not found"})
         if not hmac.compare_digest((self.headers.get("X-Theater-Token") or "").encode(), TOKEN.encode()):
             return self._send(401, {"error": "token missing or wrong"})
@@ -398,7 +554,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
         except (ValueError, OSError):
             return self._send(400, {"error": "body must be a JSON object"})
-        code, body = run_action(req)
+        code, body = autocal_control(req) if ppath == "/v1/autocal/control" else run_action(req)
         self._send(code, body)
 
 

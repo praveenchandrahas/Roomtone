@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theater-token" content="__TOKEN__">
+<meta name="color-scheme" content="dark light">
+<title>Autocal · Theatre control</title>
+<style>
+:root {
+  --bg: #07090d; --bg-glow: rgba(255, 176, 84, .07); --panel: rgba(255, 255, 255, .035); --panel-solid: #11151c; --line: rgba(255, 255, 255, .08);
+  --line-strong: rgba(255, 255, 255, .16); --text: #e9eef5; --muted: #7e8aa0; --faint: #4d576a;
+  --accent: #ffb054; --accent-ink: #1a1004;
+  --ok: #4ade80; --warn: #fbbf24; --bad: #fb7185;
+  --shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 18px 40px -24px rgba(0,0,0,.8);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f2f0eb; --bg-glow: rgba(217, 119, 6, .08); --panel: rgba(255, 255, 255, .72); --panel-solid: #ffffff; --line: rgba(20, 24, 32, .1);
+    --line-strong: rgba(20, 24, 32, .22); --text: #161b24; --muted: #5b6577; --faint: #98a1b1;
+    --accent: #c2670a; --accent-ink: #ffffff; --ok: #15803d; --warn: #a16207; --bad: #be123c;
+    --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(30,30,50,.35);
+  }
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body { margin: 0; color: var(--text); min-height: 100vh; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  background: radial-gradient(1100px 520px at 50% -140px, var(--bg-glow), transparent 70%), var(--bg); font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
+main { max-width: 1180px; margin: 0 auto; padding: 22px 20px 36px; }
+header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+.brand { display: flex; align-items: baseline; gap: 10px; flex: 1; min-width: 200px; }
+.brand h1 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: .28em; text-transform: uppercase; }
+.brand h1 span { color: var(--accent); }
+.brand small { color: var(--muted); font-size: 12px; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border-radius: 999px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); background: var(--panel); white-space: nowrap; text-decoration: none; }
+.pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.pill.ok { color: var(--text); } .pill.ok i { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.pill.warn { color: var(--text); } .pill.warn i { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.pill.bad { color: var(--text); } .pill.bad i { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+a.pill:hover { color: var(--text); border-color: var(--line-strong); }
+.layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 960px) { .layout { grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr); } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px; box-shadow: var(--shadow); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); min-width: 0; }
+.card h2 { font-size: 11px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }
+.card h2 .tag { margin-left: auto; letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--faint); font-size: 12px; }
+.stack { display: grid; gap: 16px; align-content: start; min-width: 0; }
+dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; }
+dt { color: var(--muted); } dd { margin: 0; word-break: break-word; }
+.big { font-size: 22px; font-weight: 600; letter-spacing: -.01em; line-height: 1.25; margin-bottom: 4px; }
+.msg { color: var(--muted); margin-bottom: 14px; min-height: 1.4em; }
+.badge { display: inline-block; padding: 1px 9px; border-radius: 999px; border: 1px solid var(--line-strong); font-size: 12px; }
+.badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+.badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.badge.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 55%, transparent); }
+.small { color: var(--faint); font-size: 12px; }
+.prog { height: 8px; border-radius: 4px; background: rgba(127,127,140,.18); overflow: hidden; margin: 4px 0 16px; }
+.prog > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #fff)); transition: width .3s ease; }
+label.lbl { display: block; color: var(--muted); font-size: 12px; margin: 10px 0 2px; display: flex; justify-content: space-between; }
+.meter { height: 6px; background: rgba(127,127,140,.18); border-radius: 3px; overflow: hidden; margin: 2px 0 6px; position: relative; }
+.meter > i { display: block; height: 100%; background: linear-gradient(90deg, var(--ok), var(--warn) 80%, var(--bad)); width: 0; transition: width .12s linear; }
+.meter > b { position: absolute; top: -1px; bottom: -1px; width: 2px; background: var(--muted); left: 0; }
+.prompt { margin: 14px 0 16px; padding: 14px; border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.prompt p { margin: 0 0 12px; font-size: 15px; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+button.b { font: inherit; padding: 9px 18px; border-radius: 10px; border: 1px solid var(--line-strong); background: transparent; color: var(--text); cursor: pointer; min-height: 38px; }
+button.b.go { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.b.stop { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 55%, transparent); }
+button.b:disabled { opacity: .45; cursor: default; }
+button.b:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sim { color: var(--warn); font-weight: 600; letter-spacing: .08em; font-size: 11px; text-transform: uppercase; }
+.runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 420px; overflow: auto; }
+.runs button { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; text-align: left; font: inherit; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; cursor: pointer; }
+.runs button:hover { background: rgba(127,127,140,.08); }
+.runs button[aria-current="true"] { border-color: var(--line-strong); background: rgba(127,127,140,.1); }
+.runs .sub { grid-column: 1 / -1; color: var(--faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.warnings { margin: 10px 0 0; padding-left: 18px; color: var(--muted); }
+.warnings li { margin: 3px 0; }
+table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+th { text-align: right; color: var(--muted); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; font-weight: 600; }
+.scroll { overflow-x: auto; }
+code.cmd { display: block; margin-top: 10px; padding: 8px 12px; border-radius: 8px; background: rgba(127,127,140,.12); font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; white-space: pre; }
+footer { margin-top: 18px; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand"><h1>Theatre <span>control</span></h1><small>Autocal</small></div>
+    <span id="state-pill"></span>
+    <a class="pill" href="/">Control</a>
+  </header>
+  <div class="layout">
+    <div class="stack">
+      <section class="card" aria-labelledby="h-cur"><h2 id="h-cur">Run <span class="tag" id="cur-id"></span></h2>
+        <div id="cur-empty" class="msg" hidden></div>
+        <div id="cur" hidden>
+          <div class="big" id="step"></div><div class="msg" id="message"></div>
+          <div class="prog" role="progressbar" aria-label="Run progress" aria-valuemin="0" aria-valuemax="100" id="progbar"><i id="prog"></i></div>
+          <div class="prompt" id="prompt" hidden role="alert"><p id="prompt-text"></p><button type="button" class="b go" id="btn-continue">Continue</button></div>
+          <dl id="curdl"></dl>
+          <label class="lbl" for="m-peak"><span>Mic peak</span><span id="v-peak">n/a</span></label><div class="meter"><i id="m-peak"></i></div>
+          <label class="lbl" for="m-rms"><span>Mic level (rms)</span><span id="v-rms">n/a</span></label><div class="meter"><i id="m-rms"></i></div>
+          <label class="lbl"><span>Room noise floor</span><span id="v-floor">n/a</span></label>
+          <div class="btns"><button type="button" class="b stop" id="btn-abort">Stop the run</button></div>
+          <div class="small" id="ctl-msg" role="status" aria-live="polite" style="margin-top:8px"></div>
+        </div>
+      </section>
+      <section class="card" aria-labelledby="h-res"><h2 id="h-res">Result <span class="tag" id="res-id"></span></h2>
+        <div id="res"><div class="msg">Pick a run from the list.</div></div></section>
+    </div>
+    <section class="card" aria-labelledby="h-runs"><h2 id="h-runs">Runs</h2><ul class="runs" id="runs"></ul>
+      <div class="small" id="runs-dir" style="margin-top:10px"></div></section>
+  </div>
+  <footer class="small">Local only (127.0.0.1). This page watches autocal and can press Continue or stop a run; it cannot start a run or apply anything. Those stay in the terminal: <code>autocal run</code>, <code>autocal apply</code>.</footer>
+</main>
+<script>
+"use strict";
+const TOKEN = document.querySelector('meta[name="theater-token"]').content;
+const $ = id => document.getElementById(id);
+const ACTIVE = ["preflight", "ramp", "channel_id", "sweeping", "waiting_user", "analysing"];
+const STATE_TEXT = { idle: "Starting", preflight: "Checking the setup", ramp: "Finding the sweep level", channel_id: "Checking each speaker", sweeping: "Measuring", waiting_user: "Waiting for you",
+  analysing: "Analysing", done: "Finished", aborted: "Stopped", error: "Stopped" };
+let ov = null, selected = null, shownDetail = null, timer = null;
+
+function el(tag, text, cls) { const e = document.createElement(tag); if (text !== undefined && text !== null) e.textContent = text; if (cls) e.className = cls; return e; }
+const num = (v, d = 1, u = "") => (typeof v === "number" && isFinite(v)) ? v.toFixed(d) + u : "n/a";
+const sgn = (v, d = 1) => (typeof v === "number" && isFinite(v)) ? (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(d) : "n/a";
+const pct = db => (typeof db !== "number" || !isFinite(db)) ? 0 : Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+const cls = v => ({ PASS: "ok", WARN: "warn", FAIL: "bad", done: "ok", aborted: "warn", error: "bad" })[v] || "";
+function pill(text, c) { const p = el("span", undefined, "pill " + (c || "")); p.append(el("i"), document.createTextNode(text)); return p; }
+function rows(dl, pairs) { dl.replaceChildren(); for (const [k, v, c] of pairs) { dl.append(el("dt", k)); const dd = el("dd"); if (c) dd.append(el("span", v, "badge " + c)); else dd.textContent = v; dl.append(dd); } }
+const when = iso => { try { return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch (e) { return iso || ""; } };
+
+async function post(body) {
+  const r = await fetch("/v1/autocal/control", { method: "POST", headers: { "Content-Type": "application/json", "X-Theater-Token": TOKEN }, body: JSON.stringify(body) });
+  return [r.status, await r.json().catch(() => ({}))];
+}
+async function control(action) {
+  const c = ov && ov.current; if (!c) return;
+  const msg = $("ctl-msg"); msg.textContent = "Sending…";
+  const body = { action, run: c.id }; if (action === "continue") body.prompt = c.prompt && c.prompt.id;
+  const [code, j] = await post(body);
+  msg.textContent = j.ok ? (action === "abort" ? "Stop requested; playback stops within a fraction of a second." : "Continuing.") : ("Not done: " + (j.error || code));
+  tick();
+}
+$("btn-continue").addEventListener("click", () => control("continue"));
+$("btn-abort").addEventListener("click", () => control("abort"));
+
+function renderCurrent(c) {
+  $("cur").hidden = !c; $("cur-empty").hidden = !!c;
+  if (!c) { $("cur-empty").textContent = ov && ov.found ? "No runs yet. Start one in the terminal with: autocal run" : (ov && ov.hint) || "No data."; $("cur-id").textContent = ""; $("state-pill").replaceChildren(pill("No run")); return; }
+  const active = ACTIVE.includes(c.state) && !c.stale;
+  $("cur-id").textContent = c.id;
+  const sp = $("state-pill"); sp.replaceChildren(pill(c.stale ? "Not updating" : (STATE_TEXT[c.state] || c.state || "?"), c.stale ? "warn" : active ? "ok" : cls(c.state)));
+  $("step").textContent = c.stale ? "This run is no longer updating" : (STATE_TEXT[c.state] || c.state || "");
+  $("message").textContent = c.error && !ACTIVE.includes(c.state) ? c.error : (c.message || c.step || "");
+  const p = typeof c.progress === "number" ? Math.max(0, Math.min(1, c.progress)) : 0;
+  $("prog").style.width = (p * 100).toFixed(1) + "%"; $("progbar").setAttribute("aria-valuenow", Math.round(p * 100));
+  const pr = c.prompt && c.state === "waiting_user" && active ? c.prompt : null;
+  $("prompt").hidden = !pr; if (pr) $("prompt-text").textContent = pr.text || "Ready to continue?";
+  const m = c.mic || {};
+  rows($("curdl"), [["Position", c.positions_total ? `${c.position} of ${c.positions_total}` : "n/a"], ["Mode", c.mode || "n/a"],
+    ["Sweep level", c.level_dbfs == null ? "n/a" : num(c.level_dbfs, 0, " dBFS")], ["Updated", c.stale ? `${Math.round(c.age_s)} s ago` : "live", c.stale ? "warn" : null],
+    ...(c.simulated ? [["Source", "SIMULATED run (no sound is played)", "warn"]] : [])]);
+  $("m-peak").style.width = pct(m.peak_dbfs) + "%"; $("v-peak").textContent = num(m.peak_dbfs, 1, " dBFS");
+  $("m-rms").style.width = pct(m.rms_dbfs) + "%"; $("v-rms").textContent = num(m.rms_dbfs, 1, " dBFS");
+  $("v-floor").textContent = num(m.noise_floor_dbfs, 1, " dBFS");
+  $("btn-abort").disabled = !active; $("btn-continue").disabled = !pr;
+}
+
+function renderRuns(runs) {
+  const ul = $("runs"); ul.replaceChildren();
+  if (!runs.length) ul.append(el("li", "No runs yet.", "small"));
+  for (const r of runs) {
+    const li = el("li"), b = el("button"); b.type = "button"; b.setAttribute("aria-current", String(r.id === selected));
+    const left = el("span"); left.append(document.createTextNode(r.id));
+    if (r.simulated) { left.append(document.createTextNode(" ")); left.append(el("span", "sim", "sim")); }
+    const right = el("span"), v = r.verdict || (ACTIVE.includes(r.state) ? "running" : r.state || "?");
+    right.append(el("span", v, "badge " + (r.verdict ? cls(r.verdict) : ACTIVE.includes(r.state) ? "ok" : cls(r.state))));
+    b.append(left, right, el("span", `${when(r.created)} · ${r.mode || "?"}${r.message ? " · " + r.message : ""}`, "sub"));
+    b.addEventListener("click", () => { selected = r.id; shownDetail = null; renderRuns(ov.runs); loadDetail(true); });
+    li.append(b); ul.append(li);
+  }
+}
+
+function renderDetail(d) {
+  const box = $("res"); box.replaceChildren(); $("res-id").textContent = selected || "";
+  if (!d || !d.has_results) {
+    const st = d && d.status;
+    box.append(el("div", st ? (ACTIVE.includes(st.state) ? "No result yet: this run is still going." : "This run has no result" + (st.error ? ": " + st.error : ".")) : "Pick a run from the list.", "msg")); return;
+  }
+  const r = d.result, head = el("div"); head.append(el("span", r.verdict || "?", "badge " + cls(r.verdict)));
+  if (r.simulated) { head.append(document.createTextNode(" ")); head.append(el("span", "SIMULATED", "sim")); }
+  box.append(head, el("p", r.summary || "", "msg"));
+  if ((r.warnings || []).length) { const ul = el("ul", undefined, "warnings"); for (const w of r.warnings) ul.append(el("li", w)); box.append(ul); }
+  const b = r.bass || {}, h = r.heights || {};
+  const dl = el("dl"); rows(dl, [["Bass vs target", `${num(b.rms_to_target_before_db, 2)} → ${num(b.rms_to_target_after_db, 2)} dB rms (proposed)`],
+    ["Heights vs bed", h.rms_to_bed_before_db == null ? "n/a" : `${num(h.rms_to_bed_before_db, 2)} → ${num(h.rms_to_bed_after_db, 2)} dB rms (proposed)`], ["Target", r.target ? `${r.target.name}, +${num(r.target.hump_db, 0)} dB bass hump` : "n/a"]]);
+  dl.style.marginTop = "12px"; box.append(dl);
+  const wrap = el("div", undefined, "scroll"), t = el("table"), thead = el("tr");
+  for (const c of ["Channel", "Delay now → new (ms)", "Trim now → new (dB)", "SNR (dB)", "Notes"]) thead.append(el("th", c));
+  t.append(thead);
+  for (const row of r.table || []) {
+    const tr = el("tr"); tr.append(el("td", row.channel), el("td", `${num(row.delay_now_ms, 2)} → ${num(row.delay_new_ms, 2)}`), el("td", `${sgn(row.trim_now_db)} → ${sgn(row.trim_new_db)}`),
+      el("td", num(row.snr_db, 0)), el("td", (row.notes || []).join("; ") || "–")); tr.lastChild.style.textAlign = "left"; t.append(tr);
+  }
+  wrap.append(t); box.append(wrap);
+  const cm = r.commands || {};
+  if (cm.apply) { box.append(el("div", "To use it, type this in the terminal (this page does not apply anything):", "small")); box.lastChild.style.marginTop = "12px"; box.append(el("code", cm.apply, "cmd")); }
+}
+
+async function loadDetail(force) {
+  if (!selected) return renderDetail(null);
+  try { const d = await (await fetch("/v1/autocal/run?id=" + encodeURIComponent(selected))).json(); shownDetail = selected + ":" + (d.has_results ? "r" : "n"); renderDetail(d); } catch (e) { renderDetail(null); }
+}
+
+async function tick() {
+  clearTimeout(timer);
+  let fast = false;
+  try {
+    ov = await (await fetch("/v1/autocal")).json();
+    $("runs-dir").textContent = ov.runs_dir ? "Runs folder: " + ov.runs_dir : (ov.hint || "");
+    const c = ov.current; fast = !!(c && ACTIVE.includes(c.state) && !c.stale);
+    if (selected === null && ov.runs.length) { selected = ov.runs[0].id; shownDetail = null; }
+    renderCurrent(c); renderRuns(ov.runs);
+    const sel = ov.runs.find(r => r.id === selected), want = selected && sel ? selected + ":" + (sel.verdict ? "r" : "n") : null;
+    if (want !== shownDetail) loadDetail();
+  } catch (e) { $("state-pill").replaceChildren(pill("Disconnected", "bad")); }
+  timer = setTimeout(tick, document.hidden ? 5000 : fast ? 500 : 4000);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+tick();
+</script>
+</body>
+</html>

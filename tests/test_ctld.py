@@ -1,5 +1,5 @@
 """theater-ctld against a fake `eq` and a fake CamillaDSP websocket.   Run: python3 tests/test_ctld.py"""
-import base64, hashlib, http.client, importlib.machinery, importlib.util, json, os, socket, stat, struct, sys, tempfile, threading, time
+import base64, shutil, hashlib, http.client, importlib.machinery, importlib.util, json, os, socket, stat, struct, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 tmp = tempfile.mkdtemp()
@@ -212,6 +212,78 @@ check("levels stream is behind the same Host check as the rest", c.getresponse()
 c.close()
 C.WS_PORT = 1
 check("websocket: unreachable gives ok false with the unit hint, never an exception", C.live_block()["ok"] is False)
+
+# ------------------------------------------------------------------ autocal runs: read-mostly, two control files only
+sys.path.insert(0, os.path.join(HERE, ".."))
+from autocal.web import mock as MK
+runs = f"{tmp}/runs"; os.makedirs(runs)
+os.environ["THEATER_AUTOCAL_RUNS"] = f"{tmp}/does-not-exist"
+code, j, _, _ = req("GET", "/v1/autocal")
+check("autocal: no runs folder gives found false and a hint, not an error", code == 200 and j["found"] is False and "THEATER_AUTOCAL_RUNS" in j["hint"], str(j))
+os.environ["THEATER_AUTOCAL_RUNS"] = runs
+MK.make_run(runs, "20261025-210000", "single", seed=2, scenario="pass")
+MK.make_run(runs, "20261026-091500", "five", seed=7, scenario="warn")
+live = MK.make_run(runs, "20261026-183700", "five", seed=1, scenario="pass")
+os.remove(f"{live}/results.json")
+
+
+def set_status(rid, state, prompt=None, age=0):
+    f = f"{runs}/{rid}/status.json"
+    st = json.load(open(f)); st.update(state=state, prompt=prompt, message="x"); json.dump(st, open(f, "w"))
+    if age:
+        os.utime(f, (time.time() - age, time.time() - age))
+
+
+def files_under(d):
+    return sorted(os.path.relpath(os.path.join(a, n), d) for a, _, ns in os.walk(d) for n in ns)
+
+
+set_status("20261026-183700", "waiting_user", {"id": "move-mic", "text": "Move the microphone 30 cm to the left", "action": "continue"})
+code, j, _, _ = req("GET", "/v1/autocal")
+check("autocal: runs are listed newest first with the verdict, and the newest is the current one", [r["id"] for r in j["runs"]] == ["20261026-183700", "20261026-091500", "20261025-210000"]
+      and j["runs"][1]["verdict"] in ("PASS", "WARN", "FAIL") and j["current"]["state"] == "waiting_user" and j["current"]["prompt"]["id"] == "move-mic" and j["current"]["stale"] is False, str(j["runs"][:2]))
+code, j, raw, _ = req("GET", "/v1/autocal/run?id=20261026-091500")
+check("autocal: a run's detail has the verdict, summary, the 8-row table and the command to type, but not the curves", code == 200 and j["has_results"] and len(j["result"]["table"]) == 8
+      and j["result"]["commands"]["apply"] == "autocal apply 20261026-091500" and b"response_db" not in raw and b'"ir"' not in raw, str(j)[:200])
+code, j, _, _ = req("GET", "/v1/autocal/run?id=20261026-183700")
+check("autocal: a run without results says so", code == 200 and j["has_results"] is False)
+check("autocal: a malformed or traversing run id is 404", all(req("GET", "/v1/autocal/run?id=" + i)[0] == 404 for i in ("..", "../../etc", "2026", "20261026-0915000", "")))
+code, _, raw, _ = req("GET", "/autocal")
+check("autocal: the page is served with the token inside", code == 200 and C.TOKEN.encode() in raw and b"__TOKEN__" not in raw)
+check("autocal: the data is behind the Host check like the rest", req("GET", "/v1/autocal", host="evil.example:80")[0] == 421)
+
+
+def ctl(body, token=True, headers=None):
+    h = {"X-Theater-Token": C.TOKEN} if token else {}
+    h.update(headers or {})
+    return req("POST", "/v1/autocal/control", body, headers=h)
+
+
+before = files_under(runs)
+check("autocal control: no token is 401", ctl({"action": "abort", "run": "20261026-183700"}, token=False)[0] == 401)
+check("autocal control: a cross-origin request is refused even with the token", ctl({"action": "abort", "run": "20261026-183700"}, headers={"Origin": "https://evil.example"})[0] == 403)
+check("autocal control: an unknown action is 400", ctl({"action": "start", "run": "20261026-183700"})[0] == 400 and ctl({"action": "apply", "run": "20261026-183700"})[0] == 400)
+check("autocal control: nothing was written by the refused requests", files_under(runs) == before)
+check("autocal control: continue with a stale prompt id is refused", ctl({"action": "continue", "run": "20261026-183700", "prompt": "other"})[0] == 409 and ctl({"action": "continue", "run": "20261026-183700"})[0] == 409)
+check("autocal control: a traversing run id is 404", ctl({"action": "abort", "run": "../x"})[0] == 404 and ctl({"action": "abort", "run": "20261026-183700/../20261026-091500"})[0] == 404)
+check("autocal control: a finished run is not touched", ctl({"action": "abort", "run": "20261026-091500"})[0] == 409 and files_under(runs) == before)
+code, j, _, _ = ctl({"action": "continue", "run": "20261026-183700", "prompt": "move-mic"})
+check("autocal control: continue writes control/continue-<prompt id> and nothing else", code == 200 and j["ok"] and files_under(runs) == sorted(before + ["20261026-183700/control/continue-move-mic"]), str(files_under(runs)[-3:]))
+check("autocal control: pressing it twice is harmless", ctl({"action": "continue", "run": "20261026-183700", "prompt": "move-mic"})[1].get("noop") is True)
+code, j, _, _ = ctl({"action": "abort", "run": "20261026-183700"})
+check("autocal control: abort writes control/abort", code == 200 and os.path.exists(f"{live}/control/abort"))
+set_status("20261026-183700", "sweeping", age=120)
+code, j, _, _ = req("GET", "/v1/autocal")
+check("autocal: an active run that stopped updating is marked stale", j["current"]["stale"] is True)
+os.remove(f"{live}/control/abort")
+check("autocal control: a stale run gets no control file (it is not running)", ctl({"action": "abort", "run": "20261026-183700"})[0] == 409 and not os.path.exists(f"{live}/control/abort"))
+set_status("20261026-183700", "sweeping")
+shutil.rmtree(f"{live}/control"); os.symlink(runs, f"{live}/control")
+check("autocal control: a control folder that is a symlink is refused", ctl({"action": "abort", "run": "20261026-183700"})[0] == 409 and not os.path.exists(f"{runs}/abort"))
+os.unlink(f"{live}/control"); os.makedirs(f"{live}/control")
+os.symlink(f"{runs}/20261025-210000", f"{runs}/20261026-190000")
+check("autocal: a run folder that is a symlink is ignored", ctl({"action": "abort", "run": "20261026-190000"})[0] == 404 and "20261026-190000" not in [r["id"] for r in req("GET", "/v1/autocal")[1]["runs"]])
+os.unlink(f"{runs}/20261026-190000")
 
 print("\nALL PASS" if ok else "\nSOME FAILED")
 sys.exit(0 if ok else 1)

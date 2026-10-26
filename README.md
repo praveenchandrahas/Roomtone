@@ -49,6 +49,12 @@ The three blocks map to this repository like this: the **measurement data path**
 
 *The control page (dark theme; it follows your system theme, so there is a light one too: [`docs/img/control-light.png`](docs/img/control-light.png)). These screenshots were taken against a simulated CamillaDSP that generates moving levels, so the numbers and the "now playing" text are made up for the picture, not a recording of a film on the rig.*
 
+- **Autocal page:** `http://127.0.0.1:8765/autocal` (a link in the control page's header). Live view of the run in progress (step, progress, position, the mic meters and the room noise floor), the question it is waiting on with a **Continue** button, a **Stop the run** button, and the list of past runs with their verdict and, for the one you pick, the summary, warnings and the per-channel delay/trim table. It reads the run folders under `runs/` (`gui/install-ctld.sh` points the service at this checkout's `runs/`; or set `THEATER_AUTOCAL_RUNS`). **It cannot start a run or apply anything**: those stay in the terminal (`autocal run`, `autocal apply <id>`; the page shows the apply command to type). Its only writes are the two files autocal already polls, `control/continue-<question id>` and `control/abort`, and only for a run that is active and has updated in the last 60 s.
+
+<p align="center"><img src="docs/img/autocal-page-dark.png" alt="The autocal page: a simulated run waiting for the microphone to be moved, the run list, and the result of an earlier run" width="880"></p>
+
+*Screenshots (also [light](docs/img/autocal-page-light.png)) use simulated runs from `autocal/web/mock.py`: the values are generated, no sound was played.*
+
 - **Overlay:** `overlay/install-theater-status.sh --bindings` installs the mpv script and binds **C**. One panel: status first, then a row per setting showing its current value; Enter steps a row, risky changes ask first. Tests: `tests/test_theater_status.py` (mocked mpv, needs `pip install lupa`).
 - **Mic noise check:** `python3 -m autocal mic --spectrum` records 15 s (nothing is played) and prints the noise floor per octave band with its spread over time, and the strongest narrow tone, to tell a cycling compressor or fan from electrical hum before a calibration run.
 
