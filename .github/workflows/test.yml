@@ -1,0 +1,18 @@
+# Runs this repository's tests on GitHub's servers. It has read-only access to the code, no secrets, and cannot touch any machine of yours.
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy scipy
+      - run: bash tests/run.sh

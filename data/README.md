@@ -13,7 +13,7 @@ Not included on purpose: recordings of copyrighted film soundtracks.
 
 | File | What it is |
 |------|------------|
-| `mic/dayton-imm-6s-calibration.txt` | Calibration file of the owner's Dayton iMM-6S (header `*1000Hz -40.5`, 20 Hz to 20 kHz, dB corrections). **Valid only for that one microphone**; use your own with your own mic. The REW exports above had it applied. The recording analysers in `tools/` (sweep, sub, dialogue, reflection) and the figures drawn from the raw recordings (03, 06 range, 07, 08, 12 to 19) do **not** apply it. Its size: within about +-1.5 dB from 25 Hz to 6 kHz, up to +2.1 dB at 7.3 to 7.5 kHz, about -2.1 dB at 17 kHz. That matters little for comparisons between speakers (the same correction applies to all) but shifts absolute curves by that much. |
+| `mic/dayton-imm-6s-calibration.txt` | Calibration file of the owner's Dayton iMM-6S (header `*1000Hz -40.5`, 20 Hz to 20 kHz, dB corrections). **Valid only for that one microphone**; use your own with your own mic. Applied by REW to the exports above, and, since 2026-10-26, by every recording analyser through `tools/miccal.py` (values subtracted, zero-phase; `--mic-cal=none` switches it off). Its size: within about +-1.5 dB from 25 Hz to 6 kHz, up to +2.1 dB at 7.3 to 7.5 kHz, about -2.1 dB at 17 kHz. Results and graphs made before that date did not apply it; that matters little for comparisons between speakers (the same correction applies to all) but shifts absolute curves by that much. |
 
 Sweep conditions (from the file headers): 256k log sweep, 1 sweep at -12 dBFS, no timing reference, so absolute
 arrival times from these files are not reliable (see `docs/measurement.md`). Absolute SPL was not level-calibrated:

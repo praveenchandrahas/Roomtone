@@ -22,6 +22,11 @@ def line(s=""):
     print(s); OUT.append(s)
 
 
+import importlib.util as _ilu
+_mc = _ilu.spec_from_file_location("miccal", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "miccal.py"))
+MICCAL = _ilu.module_from_spec(_mc); _mc.loader.exec_module(MICCAL)
+
+
 def load_mono(path):
     w = wave.open(path); raw, sw, nc = w.readframes(w.getnframes()), w.getsampwidth(), w.getnchannels()
     if w.getframerate() != FS:
@@ -34,7 +39,7 @@ def load_mono(path):
         x = np.frombuffer(raw, dtype=np.int16) / 32768.0
     else:
         raise SystemExit("unsupported sample width (use 16 or 24 bit)")
-    return x.reshape(-1, nc)[:, 0].astype(np.float64)
+    return MICCAL.apply(x.reshape(-1, nc)[:, 0].astype(np.float64), FS)
 
 
 def chirp(ms=30, f0=400.0, f1=8000.0):
