@@ -67,7 +67,17 @@ def cmd_run(a, check_only=False):
 def cmd_report(a):
     from . import report
     d = resolve_run(_runs_dir(a), a.run)
-    print(report.write_report(d, json.load(open(os.path.join(d, "results.json")))))
+    rf = os.path.join(d, "results.json")
+    if not os.path.exists(rf):
+        why = ""
+        try:
+            why = json.load(open(os.path.join(d, "status.json"))).get("error") or ""
+        except (OSError, ValueError):
+            pass
+        print(f"{d}: this run stopped before the analysis, so there is no report.\n" + (f"Reason: {why}\n" if why else "")
+              + "The recording, if one was made, is in the run folder's raw/ directory.")
+        return 2
+    print(report.write_report(d, json.load(open(rf))))
     return 0
 
 
