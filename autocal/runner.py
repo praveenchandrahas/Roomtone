@@ -250,6 +250,10 @@ class Run:
                 self.details.setdefault("harmonic_transients", []).append({"position": k + 1, "events": tr})
             after = self.noise_reference(k, "after", base)
             segs = [x for x in (before, after) if x is not None]
+            if segs and not self.cfg.dry and not self.be.simulated:
+                for nm, x in (("before", before), ("after", after)):       # kept so the noise reference can be checked afterwards
+                    if x is not None:
+                        IR.write_wav24(os.path.join(self.dir, "raw", f"noise-{nm}-pos{k + 1}.wav"), x)
             if len(segs) == 2:
                 lb, la = (SF.dbfs(np.sqrt(np.mean(x ** 2))) for x in segs)
                 self.say(f"position {k + 1}: noise before {lb:.1f} dBFS, after {la:.1f} dBFS ({self.cfg.noise_ref_s:g} s each)")
@@ -264,8 +268,9 @@ class Run:
                 IR.write_wav24(os.path.join(self.dir, "raw", f"pos{k + 1}.wav"), cap.x)
             lfe = pd.ch.get("LFE")
             if lfe is not None and lfe.snr40_db is not None and not lfe.dead and lfe.snr40_db < M.SNR_ABORT_LFE_40HZ_DB:
-                raise RunAborted(f"SNR at 40 Hz for the sub (LFE) is {lfe.snr40_db:.0f} dB, below {M.SNR_ABORT_LFE_40HZ_DB:.0f} dB: "
-                                 "too quiet or too noisy for a trustworthy bass fit", "error")
+                raise RunAborted(f"SNR at 40 Hz for the sub (LFE) is {lfe.snr40_db:.0f} dB, below {M.SNR_ABORT_LFE_40HZ_DB:.0f} dB"
+                                 + (f" (against the sweep's own IR it would be {lfe.snr40_slot_db:.0f} dB; the 20 s silent recordings are saved in raw/)" if lfe.snr40_slot_db is not None and abs(lfe.snr40_slot_db - lfe.snr40_db) >= 3 else "")
+                                 + ": too quiet or too noisy for a trustworthy bass fit", "error")
             bass = [n for n in PF.BASS_CH if n in pd.ch and not pd.ch[n].dead and pd.ch[n].snr40_db is not None]
             weak = [n for n in bass if pd.ch[n].snr40_db < M.SNR_FIT_MIN_40HZ_DB]
             if bass and len(weak) * 2 >= len(bass):
