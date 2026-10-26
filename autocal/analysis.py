@@ -17,6 +17,7 @@ import copy
 import numpy as np
 
 from . import eqfit, heights as HT, ir as IR, measure as M, profile as PF
+from . import stimulus as ST
 from .stimulus import RESULT_ORDER, BED, HEIGHTS
 
 GRID = np.geomspace(20, 20000, 200)
@@ -186,7 +187,7 @@ def propose(meas, room, opts=None, previous=None):
         bass_names = [n for n in bass_names if n not in weak]
         warnings.append(f"left out of the bass-fit average (SNR at 40 Hz under {M.SNR_FIT_MIN_40HZ_DB:.0f} dB): " + ", ".join(weak))
     bass_curves = [pmean_db([meas.curve(n, pi, 1 / 6) for n in bass_names]) for pi in range(P)]
-    bopts = opts.bass or eqfit.FitOptions(max_boost_db=3.0 if opts.allow_boost else 0.0)
+    bopts = opts.bass or eqfit.FitOptions(max_boost_db=3.0 if opts.allow_boost else 0.0, lo_hz=max(eqfit.LO_HZ, ST.BANDS['LFE'][0]))
     fit = eqfit.fit_guarded(GRID, bass_curves, w, target, bopts)
     extra_old = room["bass"].get("extra_filters", [])
     extra_new = PF.merge_filters(extra_old, fit["filters"])

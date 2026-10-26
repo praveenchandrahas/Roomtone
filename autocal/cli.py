@@ -5,6 +5,7 @@ import os
 import sys
 
 from . import install, profile as PF, results as RS, runner as RN, safety as SF
+from . import stimulus as ST
 from .stimulus import LevelCapError
 
 
@@ -139,6 +140,8 @@ def parser():
 
     def common(s):
         s.add_argument("--runs-dir", help="where runs are stored (default $AUTOCAL_RUNS_DIR or ./runs)")
+        s.add_argument("--lfe-from", type=float, default=35.0, metavar="HZ",
+                       help="where the sub sweep starts (default 35: below that the sub works hardest, distorts most and has the least SNR; 25 restores the old range)")
 
     for name in ("run", "check"):
         s = sub.add_parser(name, help="measure and propose" if name == "run" else "preflight, noise floor, level ramp and channel ID only")
@@ -176,6 +179,11 @@ def parser():
 
 def main(argv=None):
     a = parser().parse_args(argv)
+    lo = getattr(a, "lfe_from", None)
+    if lo is not None:
+        if not 25.0 <= lo <= 60.0:
+            print("--lfe-from must be between 25 and 60 Hz"); return 2
+        ST.BANDS["LFE"] = (float(lo), ST.BANDS["LFE"][1])
     try:
         if a.cmd == "run":
             return cmd_run(a)
