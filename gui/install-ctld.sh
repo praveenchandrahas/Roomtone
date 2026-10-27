@@ -36,4 +36,8 @@ sleep 1
 echo
 echo "theater-ctld: $(systemctl --user is-active $UNIT)   page: http://127.0.0.1:8765   autocal: http://127.0.0.1:8765/autocal   (this computer only; nothing listens on the network)"
 ss -ltn 2>/dev/null | grep -E ':8765\b' | sed 's/^/  listening: /'
+echo "autostart: $(systemctl --user is-enabled "$UNIT" 2>/dev/null || echo NOT-ENABLED)   (the page starts with your desktop session)"
+lg=$(loginctl show-user "${USER:-$(id -un)}" -p Linger --value 2>/dev/null)
+echo "linger:    ${lg:-unknown}"
+[ "$lg" = no ] && echo "  To have it start at boot even before anyone logs in (only needed if this PC does not log in to the desktop by itself), run once:  loginctl enable-linger ${USER:-$(id -un)}"
 echo "CamillaDSP live numbers need its websocket (-p 1234 -a 127.0.0.1 in the unit); the page says so if it is off."
