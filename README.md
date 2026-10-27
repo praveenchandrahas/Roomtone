@@ -63,6 +63,20 @@ The three blocks map to this repository like this: the **measurement data path**
 - **Overlay:** `overlay/install-theater-status.sh --bindings` installs the mpv script and binds **C**. One panel: status first, then a row per setting showing its current value; Enter steps a row, risky changes ask first. Tests: `tests/test_theater_status.py` (mocked mpv, needs `pip install lupa`).
 - **Mic noise check:** `python3 -m autocal mic --spectrum` records 15 s (nothing is played) and prints the noise floor per octave band with its spread over time, and the strongest narrow tone, to tell a cycling compressor or fan from electrical hum before a calibration run.
 
+## Load and dropouts during a film (`scripts/resource-log`)
+
+Run it in a terminal, start the film, press Ctrl+C at the end (add `--gpu-sudo` on an Intel GPU, which needs root for its GPU counters and asks for your password once):
+
+```bash
+scripts/resource-log --label atmos --gpu-sudo
+```
+
+It writes `~/resource-log/<time>-atmos/summary.md` (read this first), `samples.csv` (one row per second), `environment.txt`, `pw-top.log` and `camilladsp-journal.txt`. It only reads: `/proc`, `/sys`, CamillaDSP's read-only websocket (port 1234, as the status page uses), mpv's IPC socket, `journalctl --user`, and `pw-top`, `nvidia-smi` or `intel_gpu_top` when present.
+
+The summary starts with the problems: CamillaDSP "buffer empty" log lines while mpv was running (and the same count for the time it was not, because CamillaDSP logs them about every 21 ms when idle), clipped samples, processing load and buffer level; PipeWire xruns; mpv dropped, delayed and mistimed frames and the audio/video sync offset; CPU temperature, clock and thermal-throttle events; CPU, I/O and memory stalls (PSI); the network rate. Then the CPU and RAM of each component (mpv with the Omniphony engine and harletty-bridge inside it, CamillaDSP, PipeWire, WirePlumber, the router, the upmix engine, this page, seekthumbs) and the whole-computer CPU, RAM and GPU. A source that is not available is reported as "not measured", never as zero. Run it once with the film stopped for the idle baseline, and for a fair load number stop other work first (a seekthumbs build reads the same disk, network and CPU).
+
+What it does not do: measure end-to-end audio latency (`environment.txt` lists the configured PipeWire and CamillaDSP settings, which are settings, not a measurement), or show per-process GPU use. Tested here against stand-in processes, a fake CamillaDSP websocket and mpv socket, and fake `journalctl`, `pw-top` and `intel_gpu_top` (`tests/test_resource_log.py`), not yet on the rig; the real `intel_gpu_top` and CamillaDSP log wording may need a fix on the first run.
+
 ## Adapting it to your system
 
 The calibration file in `data/mic/` belongs to **one** microphone (the author's Dayton iMM-6S); replace it with your own (or run with `--mic-cal=none`). The REW exports in `data/rew/` are from one room, and paths and

@@ -1,0 +1,684 @@
+#!/usr/bin/env python3
+"""resource-log: what the home-theatre chain costs while a film plays, and whether anything dropped out. Standard library only, read-only.
+
+  scripts/resource-log --label atmos --gpu-sudo     start it, then start the film; Ctrl+C when done (or --seconds 3600)
+  scripts/resource-log --label seekthumbs-idle      a baseline with the film stopped (CamillaDSP logs "buffer empty" about every 21 ms when idle)
+  scripts/resource-log --add name=REGEX             one more component to follow (REGEX is matched against the command line)
+
+Writes ~/resource-log/<time>-<label>/ with summary.md (read this first), samples.csv, environment.txt, pw-top.log and camilladsp-journal.txt.
+It only reads /proc, /sys, CamillaDSP's read-only websocket, mpv's IPC socket and the journal, and runs pw-top / nvidia-smi / intel_gpu_top
+if present. It changes nothing. Only the Intel GPU numbers need root (--gpu-sudo asks for your password once, in this terminal).
+
+Problems it looks for (summary.md lists them first; a source that is not available is reported as "not measured", never as zero):
+  CamillaDSP "buffer empty" log lines while mpv was running (and the idle baseline), clipped samples, processing load, buffer level;
+  PipeWire xruns (pw-top ERR column); mpv dropped, delayed and mistimed frames and the audio/video sync offset (mpv IPC socket,
+  THEATER_MPV_SOCK, set by the mpv-atmos / mpv-object-audio wrappers); CPU temperature, clock and thermal-throttle count;
+  CPU, I/O and memory pressure stalls (PSI); network receive rate (a debrid mount streams over it).
+Load: CPU per component as % of ONE core (200 = two cores), RAM as resident memory, whole-computer CPU and RAM, and the GPU where offered
+(Intel via intel_gpu_top: Render/3D, Video decode, clock, power; AMD sysfs; NVIDIA nvidia-smi). GPU figures are whole-GPU, never per process;
+an integrated GPU's memory is part of RAM. harletty-bridge and the Omniphony engine run inside mpv, so their cost is part of `mpv`.
+
+It does NOT measure end-to-end audio latency; environment.txt lists the configured settings that set it (PipeWire clock, CamillaDSP chunksize).
+"""
+import argparse
+import base64
+import csv
+import glob
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import statistics
+import struct
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime
+
+COMPONENTS = [                     # name, regex matched against "comm" or the full command line
+    ("mpv", r"^(mpv|mpv-omniphony)$|/mpv(-omniphony)?( |$)"),
+    ("camilladsp", r"camilladsp"),
+    ("pipewire", r"^pipewire$"),
+    ("wireplumber", r"wireplumber"),
+    ("pipewire-pulse", r"pipewire-pulse"),
+    ("router", r"theater-route"),
+    ("upmix-engine", r"upmix_engine"),
+    ("omniphony-studio", r"omniphony.studio"),
+    ("harletty", r"harletty"),
+    ("theater-ctld", r"theater-ctld"),
+    ("seekthumbs", r"seekthumbs\.py"),
+]
+HZ = os.sysconf("SC_CLK_TCK")
+PAGE = os.sysconf("SC_PAGE_SIZE")
+DRM = os.environ.get("RESOURCE_LOG_DRM", "/sys/class/drm")
+SYS = os.environ.get("RESOURCE_LOG_SYS", "/sys")
+PROC = os.environ.get("RESOURCE_LOG_PROC", "/proc")
+WS_HOST, _, _p = os.environ.get("THEATER_CAMILLA_WS", "127.0.0.1:1234").partition(":")
+WS_PORT = int(_p or 1234)
+MPV_SOCK = os.environ.get("THEATER_MPV_SOCK") or os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "theater-mpv.sock")
+MPV_PROPS = ["frame-drop-count", "decoder-frame-drop-count", "vo-delayed-frame-count", "mistimed-frame-count", "avsync"]
+
+
+def read(path, default=""):
+    try:
+        with open(path, errors="replace") as f:
+            return f.read()
+    except OSError:
+        return default
+
+
+# ---------------------------------------------------------------- processes
+def proc_table():
+    """pid -> (comm, cmdline, cpu_ticks, rss_bytes, threads)"""
+    out = {}
+    for d in glob.glob(PROC + "/[0-9]*"):
+        pid = d.rsplit("/", 1)[1]
+        stat = read(d + "/stat")
+        if not stat:
+            continue
+        try:
+            rp = stat.rindex(")")
+            comm = stat[stat.index("(") + 1:rp]
+            f = stat[rp + 2:].split()
+            ticks = int(f[11]) + int(f[12])            # utime + stime
+            threads = int(f[17])
+            rss = int(f[21]) * PAGE
+        except (ValueError, IndexError):
+            continue
+        cmd = read(d + "/cmdline").replace("\0", " ").strip()
+        out[pid] = (comm, cmd, ticks, rss, threads)
+    return out
+
+
+def classify(table, comps):
+    groups = {name: [] for name, _ in comps}
+    me = str(os.getpid())
+    for pid, (comm, cmd, *_rest) in table.items():
+        if pid == me:
+            continue
+        for name, rx in comps:
+            if re.search(rx, comm) or re.search(rx, cmd):
+                groups[name].append(pid)
+                break
+    return groups
+
+
+# ---------------------------------------------------------------- whole-computer readings
+def cpu_total():
+    f = read(PROC + "/stat").split("\n", 1)[0].split()[1:]
+    v = list(map(int, f[:8]))
+    return sum(v) - v[3] - v[4], sum(v)                # busy, total (idle and iowait excluded from busy)
+
+
+def mem_used_mb():
+    m = {}
+    for line in read(PROC + "/meminfo").splitlines():
+        k, _, v = line.partition(":")
+        m[k] = int(v.split()[0]) if v.strip() else 0
+    return (m.get("MemTotal", 0) - m.get("MemAvailable", 0)) / 1024.0
+
+
+def cpu_temp_c():
+    best, pkg = None, None
+    for z in glob.glob(SYS + "/class/thermal/thermal_zone*"):
+        try:
+            t = int(read(z + "/temp").strip()) / 1000.0
+        except ValueError:
+            continue
+        best = t if best is None else max(best, t)
+        if read(z + "/type").strip() == "x86_pkg_temp":
+            pkg = t
+    return pkg if pkg is not None else best
+
+
+def cpu_freq_mhz():
+    v = []
+    for f in glob.glob(SYS + "/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq"):
+        try:
+            v.append(int(read(f).strip()) / 1000.0)
+        except ValueError:
+            pass
+    return statistics.fmean(v) if v else None
+
+
+def throttle_count():
+    tot, seen = 0, False
+    for f in glob.glob(SYS + "/devices/system/cpu/cpu[0-9]*/thermal_throttle/*_throttle_count"):
+        try:
+            tot += int(read(f).strip())
+            seen = True
+        except ValueError:
+            pass
+    return tot if seen else None
+
+
+def psi(kind):
+    """avg10 of the 'some' line of /proc/pressure/<kind>: the share of the last 10 s in which at least one task stalled."""
+    m = re.search(r"some .*?avg10=([0-9.]+)", read(f"{PROC}/pressure/{kind}"))
+    return float(m.group(1)) if m else None
+
+
+def net_rx_bytes():
+    tot, seen = 0, False
+    for line in read(PROC + "/net/dev").splitlines()[2:]:
+        name, _, rest = line.partition(":")
+        if name.strip() == "lo" or not rest:
+            continue
+        try:
+            tot += int(rest.split()[0])
+            seen = True
+        except (ValueError, IndexError):
+            pass
+    return tot if seen else None
+
+
+# ---------------------------------------------------------------- GPU
+class Gpu:
+    """Whole-GPU figures from whichever source this computer has; `kind` says which, or why none.
+    Intel (Iris Xe etc.): intel_gpu_top, which needs root (--gpu-sudo): Render/3D busy %, Video (decode) busy %, clock, power.
+    AMD: sysfs busy % and VRAM. NVIDIA: nvidia-smi. An Intel integrated GPU has no VRAM of its own: its memory is part of RAM."""
+
+    def __init__(self, use_sudo=False):
+        self.kind, self.amd, self.intel, self.last = "none", None, None, {}
+        for c in sorted(glob.glob(DRM + "/card[0-9]*/device")):
+            if os.path.exists(c + "/gpu_busy_percent"):
+                self.kind, self.amd = "amdgpu sysfs", c
+                break
+        if self.kind == "none" and shutil.which("nvidia-smi"):
+            self.kind = "nvidia-smi"
+        if self.kind == "none" and shutil.which("intel_gpu_top"):
+            cmd = (["sudo"] if use_sudo else []) + ["intel_gpu_top", "-J", "-s", "1000"]
+            try:
+                self.intel = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                threading.Thread(target=self._intel_reader, daemon=True).start()
+                self.kind = "intel_gpu_top" + (" (sudo)" if use_sudo else "")
+                for _ in range(80 if use_sudo else 25):       # with sudo, the password prompt may take a while
+                    if self.last or self.intel.poll() is not None:
+                        break
+                    time.sleep(0.25)
+                if not self.last:
+                    self.kind = ("intel_gpu_top gave no data: it needs root; run again with --gpu-sudo" if not use_sudo
+                                 else "intel_gpu_top via sudo gave no data")
+                    try:
+                        self.intel.terminate()
+                    except OSError:
+                        pass
+                    self.intel = None
+            except OSError:
+                self.kind = "intel_gpu_top could not be started"
+        elif self.kind == "none":
+            self.kind = "no amdgpu sysfs, nvidia-smi or intel_gpu_top found (for Intel: sudo apt install intel-gpu-tools)"
+
+    def _intel_reader(self):
+        """intel_gpu_top -J prints a JSON list of one object per sample: cut the stream into objects by brace depth."""
+        depth, buf = 0, []
+        for line in self.intel.stdout:
+            for ch in line:
+                if ch == "{":
+                    depth += 1
+                if depth:
+                    buf.append(ch)
+                if ch == "}" and depth:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            o = json.loads("".join(buf))
+                            eng = o.get("engines", {})
+
+                            def busy(prefix):
+                                v = [e.get("busy") for k, e in eng.items() if k.startswith(prefix) and isinstance(e, dict) and e.get("busy") is not None]
+                                return max(v) if v else None
+                            self.last = dict(busy=busy("Render/3D"), video=busy("Video/") if busy("Video/") is not None else busy("Video"),
+                                             freq=(o.get("frequency") or {}).get("actual"), power=(o.get("power") or {}).get("GPU"))
+                        except (ValueError, AttributeError):
+                            pass
+                        buf = []
+
+    def sample(self):
+        """dict with busy (Render/3D or overall %), video (decode engine %), freq (MHz), power (W), vram (MB); missing values absent"""
+        if self.kind == "amdgpu sysfs":
+            try:
+                busy = float(read(self.amd + "/gpu_busy_percent").strip())
+            except ValueError:
+                busy = None
+            vram = read(self.amd + "/mem_info_vram_used").strip()
+            return dict(busy=busy, vram=int(vram) / 1e6 if vram.isdigit() else None)
+        if self.kind == "nvidia-smi":
+            try:
+                o = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,clocks.gr,power.draw", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=3).stdout
+                v = [x.strip() for x in o.splitlines()[0].split(",")]
+                return dict(busy=float(v[0]), vram=float(v[1]), freq=float(v[2]), power=float(v[3]))
+            except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+                return {}
+        if self.intel:
+            return dict(self.last)
+        return {}
+
+    def close(self):
+        if self.intel:
+            try:
+                self.intel.terminate()
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------- PipeWire
+class PwTop(threading.Thread):
+    """Every 5 s: raw pw-top output into pw-top.log, and the sum of the ERR column (xruns) best effort."""
+
+    def __init__(self, logpath):
+        super().__init__(daemon=True)
+        self.path, self.err_sum, self.stop_flag, self.ok = logpath, None, False, bool(shutil.which("pw-top"))
+
+    def run(self):
+        if not self.ok:
+            return
+        with open(self.path, "w") as lf:
+            while not self.stop_flag:
+                try:
+                    o = subprocess.run(["pw-top", "-b", "-n", "2"], capture_output=True, text=True, timeout=10).stdout
+                except (OSError, subprocess.SubprocessError):
+                    time.sleep(5)
+                    continue
+                lf.write(f"--- {datetime.now().isoformat(timespec='seconds')}\n{o}\n")
+                lf.flush()
+                last = o.split("S   ID")[-1] if "S   ID" in o else o     # the second snapshot
+                tot, seen = 0, False
+                for line in last.splitlines():
+                    m = re.match(r"^\s*[RSI!*]\s+\d+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\d+)\s", line)
+                    if m:
+                        tot += int(m.group(1))
+                        seen = True
+                if seen:
+                    self.err_sum = tot
+                for _ in range(50):
+                    if self.stop_flag:
+                        break
+                    time.sleep(0.1)
+
+
+# ---------------------------------------------------------------- CamillaDSP websocket (read-only, text frames; same method as theater-ctld)
+def _recv_exact(s, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk:
+            raise OSError("connection closed")
+        buf += chunk
+    return buf
+
+
+class CamillaWs:
+    COMMANDS = ("GetState", "GetBufferLevel", "GetClippedSamples", "GetProcessingLoad")      # read-only commands only
+
+    def __init__(self, host, port, timeout=1.0):
+        self.s = socket.create_connection((host, port), timeout=timeout)
+        try:
+            self.s.settimeout(timeout)
+            key = base64.b64encode(os.urandom(16)).decode()
+            self.s.sendall((f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                resp += _recv_exact(self.s, 1)
+                if len(resp) > 8192:
+                    raise OSError("bad handshake")
+            if b" 101 " not in resp.split(b"\r\n", 1)[0]:
+                raise OSError("websocket handshake refused")
+        except BaseException:
+            self.s.close()
+            raise
+
+    def _frame(self):
+        b1, b2 = _recv_exact(self.s, 2)
+        op, ln = b1 & 0x0F, b2 & 0x7F
+        if ln == 126:
+            ln = struct.unpack(">H", _recv_exact(self.s, 2))[0]
+        elif ln == 127:
+            ln = struct.unpack(">Q", _recv_exact(self.s, 8))[0]
+        if ln > 1 << 20:
+            raise OSError("frame too large")
+        mask = _recv_exact(self.s, 4) if b2 & 0x80 else None
+        data = _recv_exact(self.s, ln)
+        if mask:
+            data = bytes(c ^ mask[i % 4] for i, c in enumerate(data))
+        return op, data
+
+    def query(self):
+        out = {}
+        for c in self.COMMANDS:
+            data = json.dumps(c).encode()
+            mask = os.urandom(4)
+            head = bytes([0x81, 0x80 | len(data)])                  # commands are short (< 126 bytes)
+            self.s.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+            while True:
+                op, payload = self._frame()
+                if op == 0x1:
+                    break
+                if op == 0x8:
+                    raise OSError("closed by CamillaDSP")
+            try:
+                body = json.loads(payload.decode()).get(c, {})
+                out[c] = body.get("value") if body.get("result") == "Ok" else None
+            except (ValueError, AttributeError):
+                out[c] = None
+        return out
+
+    def close(self):
+        try:
+            self.s.close()
+        except OSError:
+            pass
+
+
+class Cdsp:
+    """Keeps one websocket open; on any error reports nothing for that sample and reconnects on the next one. why = last reason it was unavailable."""
+
+    def __init__(self):
+        self.ws, self.why, self.got_any = None, "", False
+
+    def sample(self):
+        try:
+            if self.ws is None:
+                self.ws = CamillaWs(WS_HOST, WS_PORT)
+            v = self.ws.query()
+            self.got_any = True
+            self.why = ""
+            return dict(load=v.get("GetProcessingLoad"), level=v.get("GetBufferLevel"), clipped=v.get("GetClippedSamples"), state=v.get("GetState"))
+        except (OSError, ValueError) as e:
+            self.why = f"CamillaDSP websocket {WS_HOST}:{WS_PORT} not reachable ({e.__class__.__name__}); the unit needs -p {WS_PORT} -a 127.0.0.1"
+            if self.ws:
+                self.ws.close()
+            self.ws = None
+            return {}
+
+
+# ---------------------------------------------------------------- mpv IPC
+def mpv_sample():
+    """Cumulative frame counters and the A/V sync offset from mpv's IPC socket; {} when mpv is not running or has no socket."""
+    if not os.path.exists(MPV_SOCK):
+        return {}
+    s = None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(MPV_SOCK)
+        for i, p in enumerate(MPV_PROPS):
+            s.sendall((json.dumps({"command": ["get_property", p], "request_id": i + 1}) + "\n").encode())
+        got, buf, t0 = {}, b"", time.time()
+        while len(got) < len(MPV_PROPS) and time.time() - t0 < 1.0:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if "request_id" in o:
+                    got[MPV_PROPS[o["request_id"] - 1]] = o.get("data") if o.get("error") == "success" else None
+        return got
+    except (OSError, ValueError, IndexError):
+        return {}
+    finally:
+        if s:
+            s.close()
+
+
+# ---------------------------------------------------------------- journal
+UNDERRUN_RX = re.compile(r"buffer empty|underrun|under-run|underflow", re.I)
+OVERRUN_RX = re.compile(r"overrun|overflow|buffer full", re.I)
+CLIP_RX = re.compile(r"clipp", re.I)
+ERR_RX = re.compile(r"\b(ERROR|WARN|WARNING)\b")
+
+
+def journal_report(start, end, windows, outdir):
+    """CamillaDSP's journal lines for the run, split into the time while mpv was running and the time it was not. Returns (text lines, ok)."""
+    if not shutil.which("journalctl"):
+        return ["journalctl not found: CamillaDSP log lines not counted."], False
+    try:
+        r = subprocess.run(["journalctl", "--user", "-u", "camilladsp.service", "--since", f"@{int(start) - 1}", "--until", f"@{int(end) + 2}",
+                            "-o", "short-unix", "--no-pager", "-q"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return [f"journalctl failed ({e.__class__.__name__}): CamillaDSP log lines not counted."], False
+    if r.returncode != 0:
+        return [f"journalctl exited {r.returncode}: CamillaDSP log lines not counted ({r.stderr.strip()[:120]})."], False
+    with open(os.path.join(outdir, "camilladsp-journal.txt"), "w") as f:
+        f.write(r.stdout)
+
+    def playing_at(ts):
+        for a, b, p in windows:
+            if a <= ts <= b:
+                return p
+        return None
+    cats = {"play": dict(under=0, over=0, clip=0, err=0, other=0), "idle": dict(under=0, over=0, clip=0, err=0, other=0)}
+    pats = {"play": {}, "idle": {}}
+    for line in r.stdout.splitlines():
+        m = re.match(r"^(\d+\.\d+)\s+\S+\s+[^:]*?:\s*(.*)$", line)
+        if not m:
+            continue
+        ts, msg = float(m.group(1)), m.group(2)
+        p = playing_at(ts)
+        if p is None:
+            continue
+        k = "play" if p else "idle"
+        c = cats[k]
+        if UNDERRUN_RX.search(msg):
+            c["under"] += 1
+        elif OVERRUN_RX.search(msg):
+            c["over"] += 1
+        elif CLIP_RX.search(msg):
+            c["clip"] += 1
+        elif ERR_RX.search(msg):
+            c["err"] += 1
+        else:
+            c["other"] += 1
+            continue
+        pat = re.sub(r"\d+(\.\d+)?", "#", msg)[:110]
+        pats[k][pat] = pats[k].get(pat, 0) + 1
+    secs = {"play": sum(b - a for a, b, p in windows if p), "idle": sum(b - a for a, b, p in windows if not p)}
+    out = []
+    for k, label in (("play", "while mpv was running"), ("idle", "while mpv was not running")):
+        c = cats[k]
+        out.append(f"CamillaDSP log, {label} ({secs[k]:.0f} s): buffer-empty/underrun lines {c['under']}, overrun lines {c['over']}, clipping lines {c['clip']}, ERROR/WARN lines {c['err']}")
+    top = sorted(pats["play"].items(), key=lambda kv: -kv[1])[:6]
+    if top:
+        out.append("most frequent problem messages while mpv was running: " + "; ".join(f'"{p}" x{n}' for p, n in top))
+    return out, True
+
+
+# ---------------------------------------------------------------- environment, statistics
+def environment_text(gpu):
+    def run(*a):
+        try:
+            return subprocess.run(a, capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    lines = [f"date: {datetime.now().isoformat(timespec='seconds')}", f"kernel: {os.uname().release}"]
+    cpu = [l.split(":", 1)[1].strip() for l in read(PROC + "/cpuinfo").splitlines() if l.startswith("model name")]
+    lines.append(f"cpu: {cpu[0] if cpu else '?'} x{len(cpu)} threads")
+    lines.append(f"gpu source: {gpu.kind}")
+    if shutil.which("lspci"):
+        lines.append("gpu devices: " + "; ".join(l.split(": ", 1)[-1] for l in run("lspci").splitlines() if re.search(r"VGA|3D|Display", l)))
+    if shutil.which("pw-metadata"):
+        lines.append("pipewire clock settings (a setting, not a measurement):")
+        lines += ["  " + l for l in run("pw-metadata", "-n", "settings").splitlines() if "clock" in l]
+    for cfg in glob.glob(os.path.expanduser("~/.config/camilladsp/config.yml")):
+        txt = read(cfg)
+        m = {k: re.search(rf"^\s*{k}:\s*(\S+)", txt, re.M) for k in ("samplerate", "chunksize", "target_level", "queuelimit")}
+        lines.append("camilladsp devices (settings, not a measurement): " + ", ".join(f"{k}={v.group(1)}" for k, v in m.items() if v))
+    return "\n".join(lines) + "\n"
+
+
+def stats(xs):
+    xs = sorted(x for x in xs if x is not None and x != "")
+    if not xs:
+        return None
+    p95 = xs[min(len(xs) - 1, int(round(0.95 * (len(xs) - 1))))]
+    return dict(n=len(xs), mean=statistics.fmean(xs), p95=p95, max=xs[-1], min=xs[0])
+
+
+def fmt(s, unit="", nd=1):
+    return "n/a" if s is None else f"mean {s['mean']:.{nd}f}{unit}, p95 {s['p95']:.{nd}f}{unit}, max {s['max']:.{nd}f}{unit}"
+
+
+def rise(values):
+    """Total increase of a cumulative counter over the run (a counter that restarts, e.g. with a new mpv, only adds what grew); None if never read."""
+    v = [x for x in values if x not in ("", None)]
+    if not v:
+        return None
+    return sum(max(0, b - a) for a, b in zip(v, v[1:]))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Record CPU, RAM, GPU, dropouts and PipeWire/CamillaDSP/mpv problems while a film plays.")
+    ap.add_argument("--interval", type=float, default=1.0, help="seconds between samples (default 1)")
+    ap.add_argument("--seconds", type=float, default=0, help="stop after this long (default: until Ctrl+C)")
+    ap.add_argument("--label", default="", help="a name for this run")
+    ap.add_argument("--out", default="", help="folder to write (default ~/resource-log/<time>-<label>)")
+    ap.add_argument("--gpu-sudo", action="store_true", help="run intel_gpu_top through sudo (Intel GPUs: it needs root; you are asked for your password once, in this terminal)")
+    ap.add_argument("--add", action="append", default=[], metavar="NAME=REGEX", help="one more component, matched against the command line")
+    args = ap.parse_args()
+
+    comps = list(COMPONENTS)
+    for a in args.add:
+        n, _, rx = a.partition("=")
+        if not n or not rx:
+            sys.exit("--add wants NAME=REGEX")
+        comps.insert(0, (n, rx))
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = os.path.expanduser(args.out) if args.out else os.path.expanduser(f"~/resource-log/{stamp}" + (f"-{args.label}" if args.label else ""))
+    os.makedirs(out, exist_ok=True)
+    gpu = Gpu(args.gpu_sudo)
+    with open(os.path.join(out, "environment.txt"), "w") as f:
+        f.write(environment_text(gpu))
+    pw = PwTop(os.path.join(out, "pw-top.log"))
+    pw.start()
+    cd = Cdsp()
+
+    names = [n for n, _ in comps]
+    header = ["t_s", "mpv_running", "sys_cpu_pct", "ram_used_mb", "cpu_temp_c", "cpu_freq_mhz", "throttle_count", "psi_cpu_pct", "psi_io_pct", "psi_mem_pct",
+              "net_rx_mbps", "gpu_busy_pct", "gpu_video_pct", "gpu_freq_mhz", "gpu_power_w", "vram_used_mb", "pw_err_sum",
+              "cdsp_load_pct", "cdsp_buffer_level", "cdsp_clipped", "mpv_drops", "mpv_decoder_drops", "mpv_vo_delayed", "mpv_mistimed", "mpv_avsync_ms"]
+    for n in names:
+        header += [f"{n}_cpu_pct", f"{n}_rss_mb", f"{n}_procs"]
+    stop = {"now": False}
+    signal.signal(signal.SIGINT, lambda *a: stop.update(now=True))
+    signal.signal(signal.SIGTERM, lambda *a: stop.update(now=True))
+    print(f"resource-log: writing {out}; GPU: {gpu.kind}; Ctrl+C to stop and print the summary", flush=True)
+
+    rows, walls = [], []
+    prev_t, prev_tab = time.time(), proc_table()
+    prev_busy, prev_total = cpu_total()
+    prev_net = net_rx_bytes()
+    t0 = prev_t
+    with open(os.path.join(out, "samples.csv"), "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(header)
+        while not stop["now"] and not (args.seconds and time.time() - t0 >= args.seconds):
+            time.sleep(args.interval)
+            now, tab = time.time(), proc_table()
+            dt = max(1e-6, now - prev_t)
+            busy, total = cpu_total()
+            sys_cpu = 100.0 * (busy - prev_busy) / max(1, total - prev_total)
+            groups = classify(tab, comps)
+            g = gpu.sample()
+            c = cd.sample()
+            m = mpv_sample()
+            net = net_rx_bytes()
+            rx = "" if net is None or prev_net is None else round(max(0, net - prev_net) * 8 / dt / 1e6, 2)
+            cell = lambda d, k, nd=1: "" if d.get(k) is None else round(d[k], nd)
+            avs = m.get("avsync")
+            row = [round(now - t0, 1), int(bool(groups.get("mpv"))), round(sys_cpu, 1), round(mem_used_mb(), 0),
+                   "" if cpu_temp_c() is None else round(cpu_temp_c(), 1), "" if cpu_freq_mhz() is None else round(cpu_freq_mhz(), 0),
+                   "" if throttle_count() is None else throttle_count(), *["" if psi(k) is None else psi(k) for k in ("cpu", "io", "memory")], rx,
+                   cell(g, "busy"), cell(g, "video"), cell(g, "freq", 0), cell(g, "power"), cell(g, "vram", 0), "" if pw.err_sum is None else pw.err_sum,
+                   cell(c, "load"), cell(c, "level", 0), cell(c, "clipped", 0),
+                   cell(m, "frame-drop-count", 0), cell(m, "decoder-frame-drop-count", 0), cell(m, "vo-delayed-frame-count", 0), cell(m, "mistimed-frame-count", 0),
+                   "" if not isinstance(avs, (int, float)) else round(avs * 1000, 1)]
+            for n in names:
+                pids = groups[n]
+                cpu = 0.0
+                for p in pids:
+                    a, b = prev_tab.get(p), tab.get(p)
+                    if a and b:
+                        cpu += (b[2] - a[2]) / HZ / dt * 100.0
+                row += [round(cpu, 1), round(sum(tab[p][3] for p in pids) / 1e6, 1), len(pids)]
+            w.writerow(row)
+            fh.flush()
+            rows.append(row)
+            walls.append((prev_t, now))
+            prev_t, prev_tab, prev_busy, prev_total, prev_net = now, tab, busy, total, net
+    pw.stop_flag = True
+    gpu.close()
+    t_end = time.time()
+
+    idx = {h: i for i, h in enumerate(header)}
+    playing = [r for r in rows if r[idx["mpv_running"]]]
+    use = playing if playing else rows
+    scope = f"the {len(playing)} samples while mpv was running" if playing else f"all {len(rows)} samples (mpv was never seen running)"
+    win = [(a, b, bool(r[idx["mpv_running"]])) for (a, b), r in zip(walls, rows)]
+    jl, jok = journal_report(t0, t_end, win, out)
+
+    def col(name, rws=None):
+        return stats([r[idx[name]] for r in (use if rws is None else rws)])
+
+    def counter(name):
+        return rise([r[idx[name]] for r in rows])
+
+    def count_line(label, v, source_ok=True, why=""):
+        return f"- {label}: " + (f"{v:g}" if v is not None else f"not measured ({why})")
+
+    problems = ["## Problems: look at these first", ""]
+    problems += [f"- {l}" for l in jl] if jok else [f"- {jl[0]}"]
+    problems.append(count_line("CamillaDSP clipped samples added during the run", counter("cdsp_clipped"), why=cd.why or "no data"))
+    ld, bl = col("cdsp_load_pct"), col("cdsp_buffer_level")
+    problems.append("- CamillaDSP processing load: " + (fmt(ld, " %") if ld else f"not measured ({cd.why or 'no data'})")
+                    + "; buffer level: " + (f"min {bl['min']:.0f}, mean {bl['mean']:.0f}, max {bl['max']:.0f} samples" if bl else "n/a"))
+    problems.append(count_line("PipeWire xruns added (pw-top ERR column, best effort)", counter("pw_err_sum"), why="no pw-top, or its output was not understood; see pw-top.log"))
+    mdrop = [counter(k) for k in ("mpv_drops", "mpv_decoder_drops", "mpv_vo_delayed", "mpv_mistimed")]
+    if any(x is not None for x in mdrop):
+        av = stats([abs(r[idx["mpv_avsync_ms"]]) for r in use if r[idx["mpv_avsync_ms"]] != ""])
+        problems.append("- mpv frames added during the run: dropped by the display path {:g}, dropped by the decoder {:g}, delayed {:g}, mistimed {:g}; audio/video sync offset {}".format(
+            *[x or 0 for x in mdrop], f"mean {av['mean']:.1f} ms, max {av['max']:.1f} ms (absolute)" if av else "n/a"))
+    else:
+        problems.append(f"- mpv frame drops and A/V sync: not measured (no mpv IPC socket at {MPV_SOCK}; the mpv-atmos / mpv-object-audio wrappers create it)")
+    tmax, thr = col("cpu_temp_c"), counter("throttle_count")
+    problems.append("- CPU temperature: " + (fmt(tmax, " C") if tmax else "not measured") + "; clock: " + (fmt(col("cpu_freq_mhz"), " MHz", 0) if col("cpu_freq_mhz") else "n/a")
+                    + "; thermal-throttle events added: " + (f"{thr:g}" if thr is not None else "not measured"))
+    pc, pi, pm = col("psi_cpu_pct"), col("psi_io_pct"), col("psi_mem_pct")
+    problems.append("- Stalls (share of the last 10 s with a task waiting, PSI): " + (f"CPU {fmt(pc, ' %')}; I/O {fmt(pi, ' %')}; memory {fmt(pm, ' %')}" if pc else "not measured (no /proc/pressure)"))
+    nr = col("net_rx_mbps")
+    problems.append("- Network received by this computer: " + (fmt(nr, " Mbit/s") if nr else "not measured"))
+
+    lines = [f"# resource-log {stamp} {args.label}".rstrip(), "", f"{len(rows)} samples, {args.interval:g} s apart; the load tables cover {scope}.",
+             "CPU is % of one core (200 = two cores busy). RSS is resident memory. Counters are totals added during the run.", ""]
+    lines += problems + ["", "## Load per component", "", "| component | CPU % (of one core) | RSS MB (mean / max) | processes seen |", "|---|---|---|---|"]
+    for n in names:
+        cpu, rss = col(f"{n}_cpu_pct"), col(f"{n}_rss_mb")
+        procs = max((r[idx[f"{n}_procs"]] for r in use), default=0)
+        lines.append(f"| {n} | not seen | | 0 |" if procs == 0 else f"| {n} | {fmt(cpu)} | {rss['mean']:.0f} / {rss['max']:.0f} | {procs} |")
+    gb, gv, gf, gp, vr = col("gpu_busy_pct"), col("gpu_video_pct"), col("gpu_freq_mhz"), col("gpu_power_w"), col("vram_used_mb")
+    lines += ["", "## Whole computer", "", f"- CPU: {fmt(col('sys_cpu_pct'), ' %')} (100 % = all threads busy)", f"- RAM in use: {fmt(col('ram_used_mb'), ' MB', 0)}"]
+    if gb or gv:
+        lines.append(f"- GPU ({gpu.kind}): " + "; ".join(x for x in [
+            f"Render/3D busy {fmt(gb, ' %')}" if gb else "", f"Video (decode) engine busy {fmt(gv, ' %')}" if gv else "",
+            f"clock {fmt(gf, ' MHz', 0)}" if gf else "", f"power {fmt(gp, ' W')}" if gp else "", f"VRAM {fmt(vr, ' MB', 0)}" if vr else ""] if x)
+            + ("; an integrated GPU's memory is part of the RAM figure above" if gpu.kind.startswith("intel") else ""))
+    else:
+        lines.append(f"- GPU: not measured: {gpu.kind}")
+    lines += ["", "Not measured: end-to-end audio latency (environment.txt lists the configured settings only).", ""]
+    text = "\n".join(lines)
+    with open(os.path.join(out, "summary.md"), "w") as f:
+        f.write(text)
+    print("\n" + text + f"\nfiles in {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
