@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Runs `python3 -m autocal ...` with the measurement mic ready: MIC set, unmuted, capture level fixed at 60 % (the level autocal was calibrated at).
+#
+#   scripts/autocal check
+#   scripts/autocal mic --spectrum
+#   scripts/autocal run --mode single
+#   scripts/autocal report|apply|keep|rollback ...        (these do not touch the mic)
+#
+# Settings (environment, all optional):
+#   MIC                  capture device name (see scripts/rec.sh list); default: the USB DAC named in docs/measurement.md
+#   AUTOCAL_MIC_GAIN     capture level to set, default 60%   (e.g. 60% or -18dB; "keep" = leave the level alone)
+#   AUTOCAL_PYTHON       python to run, default python3
+#
+# It changes only the capture level of that one mic, and only for commands that record (check, mic, run, verify; not with --simulate).
+# The level is set before the command starts and must not be touched during the run. Nothing here is permanent: the level is a PipeWire setting.
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(dirname "$HERE")
+PY=${AUTOCAL_PYTHON:-python3}
+GAIN=${AUTOCAL_MIC_GAIN:-60%}
+DEFAULT_MIC=alsa_input.usb-SPACETOUCH_USB_Audio_000000000-00.analog-stereo
+cd "$ROOT" || exit 1
+
+sub=${1:-}
+needs_mic=0
+case "$sub" in
+  check|mic|run|verify) needs_mic=1 ;;
+esac
+for a in "$@"; do [ "$a" = "--simulate" ] && needs_mic=0; done
+for a in "$@"; do [ "$a" = "--dry" ] && needs_mic=0; done
+
+if [ "$needs_mic" = 1 ]; then
+  export MIC=${MIC:-$DEFAULT_MIC}
+  if ! pactl list short sources 2>/dev/null | grep -v '\.monitor' | awk '{print $2}' | grep -qxF "$MIC"; then
+    echo "No capture device named '$MIC'. Capture devices:" >&2
+    pactl list short sources 2>/dev/null | grep -v '\.monitor' >&2
+    echo "Pick the mic's name and run:  MIC=<name> scripts/autocal $*" >&2
+    exit 1
+  fi
+  if [ "$GAIN" != keep ]; then
+    "$HERE/rec.sh" gain "$GAIN" || exit 1
+  else
+    pactl set-source-mute "$MIC" 0
+  fi
+fi
+exec "$PY" -m autocal "$@"

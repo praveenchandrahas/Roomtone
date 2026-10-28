@@ -2,6 +2,7 @@
 
 Measures every speaker through the CURRENT CamillaDSP profile, then proposes a residual correction (new = now + residual): per-channel delay, trim, polarity, a consensus-cut bass EQ towards the owner's 20 dB hump (drone2), and a heights tone/level match. It never applies anything by itself. Only numpy, scipy and the standard library.
 
+    scripts/autocal check|mic --spectrum|run ...          the same commands with the mic made ready first (MIC set, unmuted, capture level 60 %); use this on the real rig
     python3 -m autocal check [--simulate]                 preflight, noise floor, level ramp, channel ID only
     python3 -m autocal run --simulate [--mode single|five] [--runs-dir DIR]
     python3 -m autocal run [--mode single|five]           real rig (PipeWire), needs the mic
@@ -12,6 +13,8 @@ Measures every speaker through the CURRENT CamillaDSP profile, then proposes a r
     python3 -m autocal.web                                localhost GUI (separate part)
 
 Tests: `bash tests/run.sh` (analysis test takes about 2 minutes). Test env overrides: AUTOCAL_CONFIG, AUTOCAL_ROOM, AUTOCAL_BACKUP_DIR, AUTOCAL_RESTART_CMD, SET_EQ, AUTOCAL_RUNS_DIR.
+
+`scripts/autocal` is a thin wrapper: for `check`, `mic`, `run` and `verify` (not with `--simulate` or `--dry`) it sets `MIC` (default: the USB DAC named in `docs/measurement.md`, or your own `MIC`), unmutes it and sets the capture level with `rec.sh gain` (default 60 %, the level autocal was calibrated at; `AUTOCAL_MIC_GAIN=-18dB` or `keep` to change it), then runs `python3 -m autocal` with your arguments. `report`, `apply`, `keep` and `rollback` do not touch the mic. Without the wrapper the level and `MIC` are yours to set. Tested with a fake `pactl` (`tests/test_autocal_wrapper.sh`); not yet run on the real rig.
 
 ## What is verified, and how
 
