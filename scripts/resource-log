@@ -50,6 +50,7 @@ COMPONENTS = [                     # name, regex matched against "comm" or the f
     ("harletty", r"harletty"),
     ("theater-ctld", r"theater-ctld"),
     ("seekthumbs", r"seekthumbs\.py"),
+    ("ffmpeg", r"^ffmpeg$"),      # the seek-bar viewer starts one per hover (seekthumbs thumbfast.lua)
 ]
 HZ = os.sysconf("SC_CLK_TCK")
 PAGE = os.sysconf("SC_PAGE_SIZE")
