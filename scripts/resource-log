@@ -76,7 +76,8 @@ def read(path, default=""):
 
 # ---------------------------------------------------------------- processes
 def proc_table():
-    """pid -> (comm, cmdline, cpu_ticks, rss_bytes, threads)"""
+    """pid -> (comm, cmdline, cpu_ticks, rss_bytes, threads, child_ticks); child_ticks is the CPU of the process's finished (reaped) children,
+    which is the only way to see a short-lived program it started, such as an ffmpeg that lives for a tenth of a second."""
     out = {}
     for d in glob.glob(PROC + "/[0-9]*"):
         pid = d.rsplit("/", 1)[1]
@@ -88,12 +89,13 @@ def proc_table():
             comm = stat[stat.index("(") + 1:rp]
             f = stat[rp + 2:].split()
             ticks = int(f[11]) + int(f[12])            # utime + stime
+            cticks = int(f[13]) + int(f[14])           # cutime + cstime
             threads = int(f[17])
             rss = int(f[21]) * PAGE
         except (ValueError, IndexError):
             continue
         cmd = read(d + "/cmdline").replace("\0", " ").strip()
-        out[pid] = (comm, cmd, ticks, rss, threads)
+        out[pid] = (comm, cmd, ticks, rss, threads, cticks)
     return out
 
 
@@ -522,6 +524,10 @@ def environment_text(gpu):
     lines = [f"date: {datetime.now().isoformat(timespec='seconds')}", f"kernel: {os.uname().release}"]
     cpu = [l.split(":", 1)[1].strip() for l in read(PROC + "/cpuinfo").splitlines() if l.startswith("model name")]
     lines.append(f"cpu: {cpu[0] if cpu else '?'} x{len(cpu)} threads")
+    for prog in ("mpv", "ffmpeg"):                 # the versions matter: how a program starts others differs between releases
+        if shutil.which(prog):
+            v = run(prog, "--version" if prog == "mpv" else "-version").splitlines()
+            lines.append(f"{prog} version: {v[0] if v else '?'}")
     lines.append(f"gpu source: {gpu.kind}")
     if shutil.which("lspci"):
         lines.append("gpu devices: " + "; ".join(l.split(": ", 1)[-1] for l in run("lspci").splitlines() if re.search(r"VGA|3D|Display", l)))
@@ -589,6 +595,7 @@ def main():
         header += [f"{n}_cpu_pct", f"{n}_rss_mb", f"{n}_procs"]
     for k in (1, 2, 3):
         header += [f"mpv_thread{k}", f"mpv_thread{k}_cpu_pct"]          # the three busiest mpv threads of the sample, by name
+    header += ["mpv_children_cpu_pct", "unlisted_cores"]                # CPU of programs mpv started and finished; whole-computer CPU (in cores) minus the listed components
     stop = {"now": False}
     signal.signal(signal.SIGINT, lambda *a: stop.update(now=True))
     signal.signal(signal.SIGTERM, lambda *a: stop.update(now=True))
@@ -624,6 +631,7 @@ def main():
                    cell(c, "load"), cell(c, "level", 0), cell(c, "clipped", 0),
                    cell(m, "frame-drop-count", 0), cell(m, "decoder-frame-drop-count", 0), cell(m, "vo-delayed-frame-count", 0), cell(m, "mistimed-frame-count", 0),
                    "" if not isinstance(avs, (int, float)) else round(avs * 1000, 1)]
+            listed = 0.0
             for n in names:
                 pids = groups[n]
                 cpu = 0.0
@@ -631,6 +639,7 @@ def main():
                     a, b = prev_tab.get(p), tab.get(p)
                     if a and b:
                         cpu += (b[2] - a[2]) / HZ / dt * 100.0
+                listed += cpu
                 row += [round(cpu, 1), round(sum(tab[p][3] for p in pids) / 1e6, 1), len(pids)]
             thr_now, thr_cpu = {}, {}
             for p in groups.get("mpv", []):
@@ -643,6 +652,8 @@ def main():
             top = sorted(thr_cpu.items(), key=lambda kv: -kv[1])[:3]
             for k in range(3):
                 row += [top[k][0], round(top[k][1], 1)] if k < len(top) else ["", ""]
+            kids = sum(tab[p][5] - prev_tab[p][5] for p in groups.get("mpv", []) if p in tab and p in prev_tab) / HZ / dt * 100.0
+            row += [round(kids, 1), round(sys_cpu * (os.cpu_count() or 1) / 100.0 - listed / 100.0, 2)]
             w.writerow(row)
             fh.flush()
             rows.append(row)
@@ -713,6 +724,11 @@ def main():
             lines.append(f"| {n} | {sum(series[n]) / len(series[n]):.1f} | {max(series[n]):.1f} | " + (f"{sum(hot[n]) / len(hot[n]):.1f}" if hot_idx else "n/a") + " |")
     gb, gv, gf, gp, vr = col("gpu_busy_pct"), col("gpu_video_pct"), col("gpu_freq_mhz"), col("gpu_power_w"), col("vram_used_mb")
     lines += ["", "## Whole computer", "", f"- CPU: {fmt(col('sys_cpu_pct'), ' %')} (100 % = all threads busy)", f"- RAM in use: {fmt(col('ram_used_mb'), ' MB', 0)}"]
+    ul, kd = col("unlisted_cores"), col("mpv_children_cpu_pct")
+    if ul:
+        lines.append(f"- CPU used by everything NOT in the component table, in cores (whole-computer CPU minus the table; includes short-lived programs, the desktop, containers, the kernel): {fmt(ul, ' cores', 2)}")
+    if kd:
+        lines.append(f"- CPU of programs mpv started and that have finished (for example ffmpeg run by a script), % of one core: {fmt(kd)}; total {sum(r[idx['mpv_children_cpu_pct']] for r in use) * args.interval / 100:.1f} core-seconds")
     if gb or gv:
         lines.append(f"- GPU ({gpu.kind}): " + "; ".join(x for x in [
             f"Render/3D busy {fmt(gb, ' %')}" if gb else "", f"Video (decode) engine busy {fmt(gv, ' %')}" if gv else "",
