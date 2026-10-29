@@ -18,6 +18,9 @@ Load: CPU per component as % of ONE core (200 = two cores), RAM as resident memo
 (Intel via intel_gpu_top: Render/3D, Video decode, clock, power; AMD sysfs; NVIDIA nvidia-smi). GPU figures are whole-GPU, never per process;
 an integrated GPU's memory is part of RAM. harletty-bridge and the Omniphony engine run inside mpv, so their cost is part of `mpv`.
 
+For mpv it also records the busiest threads by name (samples.csv mpv_thread1..3, and a table in summary.md): that tells whether a load
+is in the video output, the main loop, the audio output or decoding.
+
 It does NOT measure end-to-end audio latency; environment.txt lists the configured settings that set it (PipeWire clock, CamillaDSP chunksize).
 """
 import argparse
@@ -91,6 +94,22 @@ def proc_table():
             continue
         cmd = read(d + "/cmdline").replace("\0", " ").strip()
         out[pid] = (comm, cmd, ticks, rss, threads)
+    return out
+
+
+def thread_ticks(pid):
+    """tid -> (thread name, cpu ticks) for one process; the name is what mpv gave the thread (for example the video output thread)."""
+    out = {}
+    for d in glob.glob(f"{PROC}/{pid}/task/[0-9]*"):
+        stat = read(d + "/stat")
+        if not stat:
+            continue
+        try:
+            rp = stat.rindex(")")
+            f = stat[rp + 2:].split()
+            out[d.rsplit("/", 1)[1]] = (stat[stat.index("(") + 1:rp], int(f[11]) + int(f[12]))
+        except (ValueError, IndexError):
+            continue
     return out
 
 
@@ -568,12 +587,15 @@ def main():
               "cdsp_load_pct", "cdsp_buffer_level", "cdsp_clipped", "mpv_drops", "mpv_decoder_drops", "mpv_vo_delayed", "mpv_mistimed", "mpv_avsync_ms"]
     for n in names:
         header += [f"{n}_cpu_pct", f"{n}_rss_mb", f"{n}_procs"]
+    for k in (1, 2, 3):
+        header += [f"mpv_thread{k}", f"mpv_thread{k}_cpu_pct"]          # the three busiest mpv threads of the sample, by name
     stop = {"now": False}
     signal.signal(signal.SIGINT, lambda *a: stop.update(now=True))
     signal.signal(signal.SIGTERM, lambda *a: stop.update(now=True))
     print(f"resource-log: writing {out}; GPU: {gpu.kind}; Ctrl+C to stop and print the summary", flush=True)
 
-    rows, walls = [], []
+    rows, walls, thr_rows = [], [], []
+    prev_thr = {}
     prev_t, prev_tab = time.time(), proc_table()
     prev_busy, prev_total = cpu_total()
     prev_net = net_rx_bytes()
@@ -610,6 +632,17 @@ def main():
                     if a and b:
                         cpu += (b[2] - a[2]) / HZ / dt * 100.0
                 row += [round(cpu, 1), round(sum(tab[p][3] for p in pids) / 1e6, 1), len(pids)]
+            thr_now, thr_cpu = {}, {}
+            for p in groups.get("mpv", []):
+                for tid, (tname, ticks) in thread_ticks(p).items():
+                    thr_now[(p, tid)] = ticks
+                    if (p, tid) in prev_thr:
+                        thr_cpu[tname] = thr_cpu.get(tname, 0.0) + (ticks - prev_thr[(p, tid)]) / HZ / dt * 100.0
+            prev_thr = thr_now
+            thr_rows.append(thr_cpu)
+            top = sorted(thr_cpu.items(), key=lambda kv: -kv[1])[:3]
+            for k in range(3):
+                row += [top[k][0], round(top[k][1], 1)] if k < len(top) else ["", ""]
             w.writerow(row)
             fh.flush()
             rows.append(row)
@@ -664,6 +697,20 @@ def main():
         cpu, rss = col(f"{n}_cpu_pct"), col(f"{n}_rss_mb")
         procs = max((r[idx[f"{n}_procs"]] for r in use), default=0)
         lines.append(f"| {n} | not seen | | 0 |" if procs == 0 else f"| {n} | {fmt(cpu)} | {rss['mean']:.0f} / {rss['max']:.0f} | {procs} |")
+    # which mpv threads carry the load, by name; and what they do in the samples where mpv as a whole is above 80 % of a core
+    play_idx = [i for i, r in enumerate(rows) if r[idx["mpv_running"]]]
+    names_seen = sorted({n for i in play_idx for n in thr_rows[i]})
+    if names_seen:
+        hot_idx = [i for i in play_idx if rows[i][idx["mpv_cpu_pct"]] >= 80]
+        series = {n: [thr_rows[i].get(n, 0.0) for i in play_idx] for n in names_seen}
+        hot = {n: [thr_rows[i].get(n, 0.0) for i in hot_idx] for n in names_seen}
+        order = sorted(names_seen, key=lambda n: -(sum(hot[n]) / len(hot[n]) if hot_idx else max(series[n])))
+        lines += ["", "## mpv threads (CPU % of one core, by thread name)", "",
+                  f"| thread | mean | max | mean while mpv is above 80 % ({len(hot_idx)} samples) |", "|---|---|---|---|"]
+        for n in order[:8]:
+            if max(series[n]) < 3 and (not hot_idx or sum(hot[n]) / len(hot[n]) < 3):
+                continue
+            lines.append(f"| {n} | {sum(series[n]) / len(series[n]):.1f} | {max(series[n]):.1f} | " + (f"{sum(hot[n]) / len(hot[n]):.1f}" if hot_idx else "n/a") + " |")
     gb, gv, gf, gp, vr = col("gpu_busy_pct"), col("gpu_video_pct"), col("gpu_freq_mhz"), col("gpu_power_w"), col("vram_used_mb")
     lines += ["", "## Whole computer", "", f"- CPU: {fmt(col('sys_cpu_pct'), ' %')} (100 % = all threads busy)", f"- RAM in use: {fmt(col('ram_used_mb'), ' MB', 0)}"]
     if gb or gv:
