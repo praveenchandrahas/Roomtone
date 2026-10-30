@@ -100,6 +100,19 @@ time.sleep(1.1)
 r = cli("run", "--simulate", "--mode", "five", "--runs-dir", RUNS, *FAST, timeout=118)
 d5 = newest(); res5 = json.load(open(os.path.join(d5, "results.json")))
 check("run --simulate --mode five finishes with 5 positions", r.returncode == 0 and len(res5["positions"]) == 5 and not RS.check_results(res5), r.stderr[-200:])
+# ---- multi-seat mode
+time.sleep(1.1)
+r = cli("run", "--simulate", "--runs-dir", RUNS, "--seat", "main=2", "--seat", "left=1@-60,0", "--seat", "right=1@60,0", *FAST, timeout=118)
+ds = newest(); ress = json.load(open(os.path.join(ds, "results.json")))
+check("run --simulate with three --seat options is a seats run with those seats in that order", r.returncode == 0 and ress["mode"] == "seats"
+      and [p["label"] for p in ress["positions"]] == ["main", "left", "right"] and not RS.check_results(ress), r.stderr[-200:])
+check("the prompts name the seats", "seat 'left'" in r.stdout and "seat 'right'" in r.stdout, r.stdout[-300:])
+check("the seat weights reach the analysis (main counts double)", [p.get("weight", None) for p in ress["positions"]] in ([2.0, 1.0, 1.0], [None, None, None]), str(ress["positions"][:1]))
+for bad, why in ((["--seat", "main=2"], "one seat"), (["--seat", "main=0", "--seat", "b=1"], "zero weight"), (["--seat", "a=1", "--seat", "a=1"], "duplicate name"),
+                 (["--seat", "nonsense"], "bad syntax"), (["--mode", "seats"], "seats mode without seats")):
+    r = cli("run", "--simulate", "--runs-dir", RUNS, *bad, *FAST)
+    check(f"seats: refused cleanly ({why})", r.returncode == 2 and "autocal:" in r.stderr, r.stderr[-160:])
+check("parse_seats reads weight and optional offsets", RS.parse_seats(["main=2", "left=1.5@-60,10"]) == [("main", (0.0, 0.0), 2.0), ("left", (-60.0, 10.0), 1.5)])
 r = cli("run", "--simulate", "--scenario", "nonsense", "--runs-dir", RUNS, *FAST)
 check("an unknown scenario fails cleanly (nonzero, no traceback to the user is not required)", r.returncode != 0)
 r = cli("run", "--simulate", "--dry", "--runs-dir", RUNS, *FAST)

@@ -46,7 +46,16 @@ def build_backend(a, sim_params=None):
 
 
 def cmd_run(a, check_only=False):
-    cfg = RN.RunConfig(mode=a.mode, noise_ref_s=a.noise_ref, runs_dir=_runs_dir(a), dry=a.dry, check_only=check_only, auto_continue=a.auto_continue,
+    seats = None
+    if a.seat:
+        try:
+            seats = RS.parse_seats(a.seat)
+        except ValueError as e:
+            print(f"autocal: {e}", file=sys.stderr); return 2
+        a.mode = "seats"
+    elif a.mode == "seats":
+        print("autocal: --mode seats needs at least two --seat NAME=WEIGHT options", file=sys.stderr); return 2
+    cfg = RN.RunConfig(seats=seats, mode=a.mode, noise_ref_s=a.noise_ref, runs_dir=_runs_dir(a), dry=a.dry, check_only=check_only, auto_continue=a.auto_continue,
                        prompt_timeout_s=a.prompt_timeout, sweep_s=a.sweep_s, tail_s=a.tail_s, target=a.target, hump_db=a.hump_db,
                        allow_boost=a.allow_boost, interactive_stdin=sys.stdin.isatty())
     sim_params = {"scenario": a.scenario, "seed": a.seed, "noise_dbfs": a.sim_noise, "speed": a.speed, "faults": a.sim_fault,
@@ -194,7 +203,10 @@ def parser():
         s = sub.add_parser(name, help="measure and propose" if name == "run" else "preflight, noise floor, level ramp and channel ID only")
         common(s)
         s.add_argument("--simulate", action="store_true", help="use the simulated room (no audio, no hardware)")
-        s.add_argument("--mode", choices=["single", "five"], default="single")
+        s.add_argument("--mode", choices=["single", "five", "seats"], default="single")
+        s.add_argument("--seat", action="append", default=[], metavar="NAME=WEIGHT[@X,Y]",
+                       help="multi-seat mode (repeatable, implies --mode seats): a seat to measure and how much it counts, e.g. --seat main=2 --seat left=1 --seat right=1. "
+                            "The first seat is the reference (the delays and trims follow the weighted mean). Optional @X,Y in cm (right, forward) is for the simulated room only")
         s.add_argument("--dry", action="store_true", help="print the timeline and levels; play nothing")
         s.add_argument("--noise-ref", type=float, default=20.0, metavar="SECONDS",
                        help="silence recorded before and after every position, the noise reference for the 40 Hz signal-to-noise (default 20; 0 = judge it from the sweep's own IR)")

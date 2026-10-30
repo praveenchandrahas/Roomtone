@@ -1,5 +1,6 @@
 """results.json / run.json assembly (schema section 3) and the JSON schemas used to validate every file autocal writes."""
 import json
+import re
 import os
 
 import numpy as np
@@ -11,6 +12,30 @@ POSITION_LABELS = [("centre", (0.0, 0.0), 2.0), ("left 20 cm", (-20.0, 0.0), 1.0
                    ("fore 20 cm", (0.0, 20.0), 1.0), ("aft 20 cm", (0.0, -20.0), 1.0)]
 PROMPT_TEXT = {1: "Move the mic 20 cm LEFT of the centre position, then continue", 2: "Move the mic 20 cm RIGHT of the centre position, then continue",
                3: "Move the mic 20 cm FORWARD of the centre position, then continue", 4: "Move the mic 20 cm BACK of the centre position, then continue"}
+
+
+def parse_seats(specs):
+    """--seat NAME=WEIGHT[@X,Y] (repeatable) -> [(label, (x_cm, y_cm), weight)]. The first seat is the reference (the mic starts there and the 'did the mic move' check compares with it).
+    X (right) and Y (forward) in cm are optional and only used by the simulated room; on the real rig the mic is simply put where a head would be."""
+    out, seen = [], set()
+    for sp in specs:
+        m = re.fullmatch(r"\s*([^=@]+?)\s*=\s*([0-9.]+)\s*(?:@\s*(-?[0-9.]+)\s*,\s*(-?[0-9.]+))?\s*", sp)
+        if not m:
+            raise ValueError(f"bad --seat '{sp}': use NAME=WEIGHT or NAME=WEIGHT@X,Y (cm), e.g. main=2 or left=1@-60,0")
+        name, w = m.group(1), float(m.group(2))
+        if w <= 0:
+            raise ValueError(f"seat '{name}': the weight must be above 0")
+        if name in seen:
+            raise ValueError(f"seat '{name}' is given twice")
+        seen.add(name)
+        out.append((name, (float(m.group(3) or 0.0), float(m.group(4) or 0.0)), w))
+    if not 2 <= len(out) <= 9:
+        raise ValueError("multi-seat mode needs 2 to 9 seats (use --mode single for one)")
+    return out
+
+
+def seat_prompt(label):
+    return f"Put the microphone at seat '{label}' (head height, where a head would be), keep the stand steady, then continue"
 
 
 def _r(a, nd=2):
@@ -62,7 +87,7 @@ RESULTS_SCHEMA = {
     "required": ["version", "id", "created", "mode", "simulated", "target", "channels", "freq", "positions", "response_db", "target_db",
                  "predicted_after_db", "table", "bass", "heights", "ir", "arrival_scatter", "warnings", "verdict", "summary", "commands", "verify"],
     "properties": {
-        "version": {"enum": [1]}, "id": {"type": "string", "pattern": r"^[0-9]{8}-[0-9]{6}$"}, "created": STR, "mode": {"enum": ["single", "five"]},
+        "version": {"enum": [1]}, "id": {"type": "string", "pattern": r"^[0-9]{8}-[0-9]{6}$"}, "created": STR, "mode": {"enum": ["single", "five", "seats"]},
         "simulated": {"type": "boolean"},
         "target": {"type": "object", "required": ["name", "hump_db"], "properties": {"name": STR, "hump_db": NUM}},
         "channels": {"type": "array", "items": CH, "minItems": 8, "maxItems": 8},
@@ -97,7 +122,7 @@ STATUS_SCHEMA = {
     "required": ["id", "state", "mode", "position", "positions_total", "step", "progress", "message", "mic", "level_dbfs", "prompt", "simulated", "error", "updated"],
     "properties": {
         "id": STR, "state": {"enum": ["idle", "preflight", "ramp", "channel_id", "sweeping", "waiting_user", "analysing", "done", "aborted", "error"]},
-        "mode": {"enum": ["single", "five"]}, "position": {"type": "integer"}, "positions_total": {"type": "integer"}, "step": STR,
+        "mode": {"enum": ["single", "five", "seats"]}, "position": {"type": "integer"}, "positions_total": {"type": "integer"}, "step": STR,
         "progress": {"type": "number", "minimum": 0, "maximum": 1}, "message": STR,
         "mic": {"type": "object", "required": ["peak_dbfs", "rms_dbfs", "noise_floor_dbfs"],
                 "properties": {"peak_dbfs": NUMN, "rms_dbfs": NUMN, "noise_floor_dbfs": NUMN}},
@@ -107,7 +132,7 @@ STATUS_SCHEMA = {
 
 RUN_SCHEMA = {
     "type": "object", "required": ["id", "created", "mode", "simulated", "target", "room_before", "version"],
-    "properties": {"id": {"type": "string", "pattern": r"^[0-9]{8}-[0-9]{6}$"}, "created": STR, "mode": {"enum": ["single", "five"]},
+    "properties": {"id": {"type": "string", "pattern": r"^[0-9]{8}-[0-9]{6}$"}, "created": STR, "mode": {"enum": ["single", "five", "seats"]},
                    "simulated": {"type": "boolean"}, "target": {"type": "object", "required": ["name", "hump_db"], "properties": {"name": STR, "hump_db": NUM}},
                    "room_before": {"type": "object", "required": ["version", "align", "height_tone", "bass"]}, "version": {"enum": [1]}}}
 

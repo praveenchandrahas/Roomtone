@@ -42,6 +42,20 @@ Tests: `bash tests/run.sh` (analysis test takes about 2 minutes). Test env overr
 
 Five mic positions (centre plus four offsets); the program prompts "move the mic" between them, detects a mic that did not move (arrival change < 0.15 ms) and asks again. Delays/trims come from the position means. Bass EQ is a consensus cut: below 100 Hz a position-weighted power average (centre weight 2), above 100 Hz the 25th percentile, cross-faded 85-115 Hz; nulls at any position are masked; cuts only (<= 8 filters, <= -15 dB, Q <= 5/6). A leave-one-position-out check steps down to fewer/softer filters if the held-out position gets worse. It aims at a smoother seat area, not a perfect single point, so predicted improvement at the centre is smaller than in single mode.
 
+## Multi-seat mode (`--seat`)
+
+For a room where more than one place is used: name the seats and say how much each counts. The microphone is put at each seat in turn (head height, where a head would be).
+
+    scripts/autocal run --seat main=2 --seat left=1 --seat right=1
+
+- **Weights** are relative (main counts double above). The **first seat is the reference**: the mic starts there, and the "did the mic move" check compares with it (it only checks that the mic moved at all, not how far).
+- **What is averaged.** Delays, trims and the heights match follow the weighted mean over the seats; below 100 Hz the bass fit uses the weighted power average, above 100 Hz the consensus cut (a peak only one seat shows is not cut). Nulls are still never filled.
+- **What to expect.** Delays are geometry: no setting suits every seat, so the result is a compromise, and a seat 60 cm off-centre will always be a fraction of a millisecond off. The bass is the part that gains: room modes differ between seats, and a cut for a peak all seats share helps all of them.
+- **The leave-one-seat-out check is stricter here and should be.** It asks whether a bass fit made from the other seats also helps the one left out. If it fails, the seats disagree and the bass fit is unreliable (a wider spread of seats makes this more likely than the 20 cm cluster of `--mode five`).
+- **Optional `@X,Y`** (cm to the right and forward) is used only by the simulated room, e.g. `--seat left=1@-60,0`.
+- **Not done yet:** `autocal verify` still measures the centre and one unfitted point near the first seat, not every seat; the web page can start only `single` and `five`.
+- Suggested sets: **1 listener**, `--mode five`. **A sofa for 3**, `--seat middle=2 --seat left=1 --seat right=1`. **More thorough**, two points per seat (`--seat left-a=1 --seat left-b=1` and so on): more sweeps (each position takes a few minutes).
+
 ## Noise reference (since 2026-10-26)
 
 The bass gate compares the 35-45 Hz signal of each channel with the room noise. Taking that noise from the sweep's own impulse response (one 180 ms window, about two independent samples in a 10 Hz band) scattered by about 4 dB, with single readings up to 15 dB apart, and it stopped viable runs. Each position now records

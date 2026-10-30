@@ -44,6 +44,7 @@ class RunConfig:
     interactive_stdin: bool = False
     out: object = None                       # file-like for terminal messages (default stdout)
     fixed_level_db: float = None             # skip the ramp's sweep-level decision (tests)
+    seats: list = None                       # mode 'seats': [(label, (x_cm, y_cm), weight)] from results.parse_seats
 
 
 def new_run_id(runs_dir):
@@ -65,7 +66,7 @@ class Run:
         self.dir = os.path.join(cfg.runs_dir, self.id)
         os.makedirs(os.path.join(self.dir, "raw"), exist_ok=True)
         self.control = SF.Control(self.dir)
-        self.positions = RS.POSITION_LABELS if cfg.mode == "five" else RS.POSITION_LABELS[:1]
+        self.positions = list(cfg.seats) if cfg.mode == "seats" else RS.POSITION_LABELS if cfg.mode == "five" else RS.POSITION_LABELS[:1]
         self.status = SF.StatusWriter(self.dir, self.id, cfg.mode, backend.simulated, len(self.positions))
         self.details = {"stages": {}}
         self.created = SF.now_iso()
@@ -228,6 +229,10 @@ class Run:
             raise RunAborted(f"noise recording {when} position {k + 1}: {nf.aborted}")
         return nf.x
 
+    def prompt_text(self, k):
+        """What to tell the person before position k (0-based, k >= 1)."""
+        return RS.seat_prompt(self.positions[k][0]) if self.cfg.mode == "seats" else RS.PROMPT_TEXT[k]
+
     def measure_position(self, k, label, offset, weight, ref_pos=None):
         """Runs the main timeline at position k (0-based) and returns the PositionData, with the move check for k > 0."""
         total = len(self.positions)
@@ -280,15 +285,16 @@ class Run:
                 moved = max((abs(pd.ch[n].arrival_ms - ref_pos.ch[n].arrival_ms) for n in ("FR", "SL", "SR")
                              if n in pd.ch and n in ref_pos.ch and not pd.ch[n].dead), default=0.0)
                 pd.move_check_ms = moved
-                if (moved < 0.15 or moved > 1.2) and retries < 2:
+                far = self.cfg.mode != "seats" and moved > 1.2         # seats are far apart on purpose: only "did not move at all" is an error there
+                if (moved < 0.15 or far) and retries < 2:
                     retries += 1
                     why = "does not seem to have moved" if moved < 0.15 else "seems to have moved too far"
                     self.say(f"position {k + 1}: arrival times changed by only {moved:.2f} ms: the mic {why}")
-                    self.wait_prompt(f"move-{k + 1}-retry{retries}", f"The mic {why} (arrival change {moved:.2f} ms, expected 0.3-0.6). "
-                                     f"{RS.PROMPT_TEXT[k]}", "mic move check", base)
+                    self.wait_prompt(f"move-{k + 1}-retry{retries}", f"The mic {why} (arrival change {moved:.2f} ms" + ("" if self.cfg.mode == "seats" else ", expected 0.3-0.6") + "). "
+                                     f"{self.prompt_text(k)}", "mic move check", base)
                     self.be.set_position(k + 1, offset)
                     continue
-                if moved < 0.15 or moved > 1.2:
+                if moved < 0.15 or (self.cfg.mode != "seats" and moved > 1.2):
                     pd.warn_move = f"position {k + 1}: mic move not confirmed (arrival change {moved:.2f} ms); results from this position are suspect"
             return pd
 
@@ -308,7 +314,7 @@ class Run:
             positions = []
             for k, (label, offset, weight) in enumerate(self.positions):
                 if k > 0:
-                    self.wait_prompt(f"move-{k + 1}", RS.PROMPT_TEXT[k], f"move the mic ({label})", 0.15 + 0.7 * k / len(self.positions))
+                    self.wait_prompt(f"move-{k + 1}", self.prompt_text(k), f"move the mic ({label})", 0.15 + 0.7 * k / len(self.positions))
                     self.be.set_position(k + 1, offset)
                 positions.append(self.measure_position(k, label, offset, weight, positions[0] if k else None))
             self.st("analysing", "analysis", "fitting delays, trims, bass EQ and heights", 0.9, position=len(self.positions))

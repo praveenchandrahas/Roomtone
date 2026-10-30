@@ -74,7 +74,7 @@ def write_report(run_dir, res):
         ver = "<h2>Verification</h2><table><tr><th>check</th><th>value</th><th>limit</th><th>result</th></tr>" + "".join(
             f"<tr><td>{html.escape(c['name'])}</td><td>{c['value']}</td><td>{c['limit']}</td><td class='{c['status'].lower()}'>{c['status']}</td></tr>" for c in v["checks"]) + f"</table><p>Overall: <b>{v['overall']}</b></p>"
     sim = '<p class="sim">SIMULATED RUN: no audio was played; the numbers describe a computer model of a room.</p>' if res["simulated"] else ""
-    one = "" if res["mode"] == "five" else "<p>One microphone position: a one-point tuning. Five-position mode averages over a few cm around the seat and checks the fit against held-out positions.</p>"
+    one = "" if res["mode"] == "five" else "<p>Multi-seat mode: the microphone was put at each seat in turn. Delays, trims and the bass fit use the weighted mean over the seats, so they are a compromise: a speaker that is better for one seat is worse for another. The leave-one-seat-out check tests whether the bass fit also helps a seat it was not fitted on.</p>" if res["mode"] == "seats" else "<p>One microphone position: a one-point tuning. Five-position mode averages over a few cm around the seat and checks the fit against held-out positions.</p>"
     doc = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>autocal report {res['id']}</title><style>
 :root{{--bg:#fff;--fg:#1d2125;--mut:#5f6b76;--line:#d0d7de;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--chg:#0550ae;--grid:#e6eaee}}
