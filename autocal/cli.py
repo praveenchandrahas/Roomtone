@@ -1,6 +1,7 @@
 """Command line: python3 -m autocal {check,run,report,apply,keep,rollback,verify} ..."""
 import argparse
 import json
+import time
 import os
 import sys
 
@@ -170,7 +171,13 @@ def cmd_verify(a):
     sim = json.load(open(os.path.join(d, "sim.json"))) if a.simulate and os.path.exists(os.path.join(d, "sim.json")) else {}
     sim["use_live_room"] = True
     be = build_backend(a, sim)
-    ver = verify.run_verify(d, be, prompt=(lambda t: print(">>> " + t)) if not a.simulate else None)
+    def ask(t):                                     # wait for the person: without this the second sweep starts before the mic is moved
+        print(">>> " + t)
+        if sys.stdin.isatty():
+            input(">>> Press Enter when the microphone is in place (Ctrl+C stops): ")
+        else:
+            print(">>> (no terminal: continuing in 20 s)"); time.sleep(20)
+    ver = verify.run_verify(d, be, prompt=ask if not a.simulate else None)
     return 0 if ver["overall"] != "FAIL" else 3
 
 
