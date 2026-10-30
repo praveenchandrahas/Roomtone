@@ -64,7 +64,7 @@ REW is the better *measurement and analysis* tool, with far more views, a huge u
 
 - **Not Dirac.** The corrections are delays, trims, polarity and parametric (IIR) cuts. There is no FIR or mixed-phase correction, and the targets are three built-in bass curves (`owner_hump`, `house`, `flat`, below 250 Hz) with no full-range target and no way yet to import your own. Do not expect Dirac's results. **Why not:** CamillaDSP can already run FIR filters, so the engine side is not the obstacle. What is missing is the filter *design* (phase decomposition, regularisation, control of pre-ringing) and, more importantly, the validation: a filter designed from a few microphone positions can sound worse away from them, and this project has not yet verified even its simple corrections (see above). In a small room most of the audible gain is in the bass, which parametric cuts already address; the likely extra gain from FIR is in phase and crossover behaviour, which the author's Z906 handles internally and Roomtone cannot reach. Adding FIR is possible, not planned, and would come after the measure-apply-verify loop is trusted.
 - **Validated in one room only.** The author's 10 x 10 ft room, a Dayton iMM-6S microphone and a Z906 plus USB-interface chain. Most pass/fail thresholds are reasoned guesses, and the tests ran against a simulated room first. The only five-position run whose data is in this repository (2026-10-28, below) ended with the verdict **FAIL**; the author forced it through anyway (see below), and this repository holds **no measurement taken after applying anything**, so there is no before-and-after yet.
-- **Written with an AI assistant** and checked against simulated rooms and REW exports, not independently validated (see the note at the end).
+- **Written with an AI assistant**, checked against simulated rooms and REW exports, and used in the author's real room: the sweeps, sub, dialogue and reflection kits ran on real recordings, and a predicted against recorded bass change agreed within about 1 to 2 dB. **Not yet validated:** autocal's pass/fail thresholds (reasoned guesses), its applied change (no measurement after applying), any other room, and nobody else or no second tool has repeated the measurements.
 - **Tied to this project's setup.** It expects CamillaDSP, PipeWire and the router in [linux-theater-dsp](https://github.com/praveenchandrahas/linux-theater-dsp), and the shipped channel map is 5.1.2. Another layout means editing the channel tables.
 - **It plays loud, sustained low frequencies.** Read the safety note below before the first real run.
 
@@ -150,7 +150,7 @@ channel names in the kits assume the author's 5.1.2 layout and interface. Change
 
 **Safety.** The sweeps and tone tests play loud, sustained low frequencies: start low, keep the sub away from your ears; high-level tones can damage drivers.
 
-Note: the analysers were written with an AI assistant and checked against simulated rooms and REW exports, not independently validated.
+Note: the analysers were written with an AI assistant, checked against simulated rooms and REW exports, and used on real recordings in the author's room (for example, a predicted against recorded bass change agreed within about 1 to 2 dB). They have not been repeated by another person or a second analysis tool, and autocal's thresholds and applied change are not yet verified (see above).
 
 ## Licence
 
