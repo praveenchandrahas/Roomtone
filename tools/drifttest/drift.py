@@ -149,6 +149,7 @@ def main(argv):
     m.add_argument("--f0", type=float, default=30.0)
     m.add_argument("--f1", type=float, default=120.0)
     m.add_argument("--fs", type=int, default=48000)
+    m.add_argument("--level", type=float, default=0.1, help="peak level of the chirps, 0-1 (0.1 = -20 dBFS, the default; 0.5 = -6 dBFS is LOUD sustained bass)")
     a = sub.add_parser("analyze")
     a.add_argument("rec")
     a.add_argument("meta")
@@ -156,7 +157,10 @@ def main(argv):
     a.add_argument("--tol", type=float, default=1.0)
     args = ap.parse_args(argv)
     if args.cmd == "make":
-        meta = make(args.out, args.period, args.count, args.gap, args.f0, args.f1, fs=args.fs)
+        if not 0 < args.level <= 0.5:
+            print("--level must be above 0 and at most 0.5")
+            return 2
+        meta = make(args.out, args.period, args.count, args.gap, args.f0, args.f1, fs=args.fs, level=args.level)
         print(f"wrote {args.out} ({meta['count']} pairs, one every {meta['period']} s = {meta['count'] * meta['period'] / 60:.0f} min) and its .json")
         return 0
     fs, x = wavfile.read(args.rec)

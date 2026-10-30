@@ -3,7 +3,7 @@
 `drift.py` measures how the delay between two playback paths changes over time. Use it on any pair of outputs behind different clocks
 (Vantec USB vs HDMI to the soundbar, or the same device twice as a control).
 
-1. `python3 drift.py make drift.wav` (default: one pair every 20 s for an hour, chirp 30-120 Hz, B 1.5 s after A).
+1. `python3 drift.py make drift.wav` (default: one pair every 20 s for an hour, chirp 30-120 Hz, B 1.5 s after A). The chirps are at **-20 dBFS** by default (`--level 0.1`; the old fixed level was -6 dBFS, too loud for sustained bass in an apartment). A short first run: `python3 drift.py make drift.wav --count 30 --f0 30 --f1 70` (10 minutes, 30-70 Hz).
 2. Route the left channel into path A (the Z906 sub via the LFE feed) and the right channel into path B (the bar's feed), through the real chain.
 3. Record the whole run with the Dayton mic at the seat (start recording before playback). The mic may be on a different clock: it cancels.
 4. `python3 drift.py analyze recording.wav drift.json --csv delays.csv`
