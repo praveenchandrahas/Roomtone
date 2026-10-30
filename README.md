@@ -5,8 +5,60 @@
 > **Part of the [Software Defined Home Theatre](https://github.com/praveenchandrahas/Software-Defined-Home-Theatre) project.** The main repository holds the documentation, build log, results and the installer checks; this is one of its parts. Sibling repositories: [linux-theater-dsp](https://github.com/praveenchandrahas/linux-theater-dsp) (router and CamillaDSP configs) · [mpv-object-audio](https://github.com/praveenchandrahas/mpv-object-audio) (player and Atmos wrapper) · [seekthumbs](https://github.com/praveenchandrahas/seekthumbs) (seek-bar thumbnails) · [mpv-shelf](https://github.com/praveenchandrahas/mpv-shelf) (film browser for mpv).
 > *Roomtone* (a film term for a location's own ambient sound) is this repository's name since 2026-10-26; it was `theater-measurement`, and GitHub redirects the old address.
 
-Test signals, recording procedures and analysers used to measure and tune a DIY Linux home theatre with a measurement microphone (a Dayton iMM-6S in the original).
-Everything here was written for one room and one seat; the kits are general enough to reuse, but read each kit's README for its assumptions.
+**Roomtone is open tooling for measuring a Linux home theatre and calibrating it in a closed loop: it plays sweeps through your live audio chain, records them with a measurement microphone, works out what is wrong with each speaker, proposes corrections, and (only when you say so) applies them to CamillaDSP with a timed trial and a rollback.** The closest commercial analogue is the *workflow* of an Audyssey- or Dirac-style auto-calibrator, on a PC, in the open. It is not a clone of their filters; see [what it is not](#what-roomtone-is-not-yet) before comparing.
+
+![The Roomtone control page (simulated data)](docs/img/control-dark.png)
+
+## What it does
+
+| Step | What Roomtone does | Where |
+|---|---|---|
+| Measure | Plays level-ramped sweeps through the **current** CamillaDSP profile, one speaker at a time, at one or five microphone positions. Finds each burst by matched filter, so a noisy room does not hide it. Records the room's noise floor before and after | `autocal/` |
+| Check | Preflight, noise floor, level ramp and channel identification (catches dead channels and a wrong microphone input) before any real sweep. Hard output cap of -20 dBFS; aborts on microphone clipping or sub distortion (second harmonic above -20 dBc) | `autocal/safety.py` |
+| Analyse | Per-speaker arrival time, level, polarity, bass response and the heights' tone against the bed, with the microphone's calibration file applied | `autocal/`, `tools/` |
+| Propose | New delays and trims, polarity flips, a consensus parametric cut below 100 Hz towards a target (the author's deliberate bass hump, `drone2`), and a tone and level match for the height speakers. Boosts only with `--allow-boost`. Changes under 0.15 ms or 1 dB are ignored | `autocal/` |
+| Apply, safely | Backs up the live config, installs the change, starts a **timed trial** that reverts by itself unless you press **Keep it**; **Roll back** restores the backup | `autocal apply`, `gui/` |
+| Show | A local control page (127.0.0.1 only): a plan view of the room with live per-speaker levels, what is playing, CamillaDSP load, and the autocal page with live progress, "move the microphone" prompts and graphs. The same panel is in mpv (press **C**) | `gui/`, `overlay/` |
+| Diagnose | Separate kits for the sub (how low it goes, where it rattles), dialogue (a STIPA-style estimate), early reflections, drift between two playback clocks, and a load and dropout logger for films | `tools/`, `scripts/resource-log` |
+
+## Why this matters on Linux
+
+As far as the author could find (checked in October 2026; tell us if something is missing), the Linux home-theatre ecosystem has good parts and one missing piece:
+
+- **The processing exists.** CamillaDSP and PipeWire can do per-channel delay, EQ, bass management and convolution with very low overhead, and they are well documented.
+- **Measurement exists.** REW runs on Linux and is the standard tool for sweeps and analysis.
+- **The commercial auto-calibrators do not come to the PC.** Audyssey MultEQ lives in the receiver (its editor is a phone app for supported Denon and Marantz models, [Sound & Vision](https://www.soundandvision.com/content/denon-marantz-launch-audyssey-multeq-editor-app)). Dirac Live's PC-based products are described for Windows and macOS ([StereoNET](https://www.stereonet.com/news/dirac-live-processor-opens-art-to-pc-and-mac-users)); the author found no Linux build, and Dirac's own support page does not list one ([Dirac](https://helpdesk.dirac.com/en/dirac-room-correction/Which-operating-systems-are-supported-by-your-software-d994)). A Linux HTPC that does its own decoding and rendering has no receiver to calibrate it.
+- **The gap is the loop in the middle.** On Linux today, the usual route is manual: measure each speaker in REW, choose a target, export filters, hand-write them into CamillaDSP, restart, measure again. Users describe it as slow and easy to get wrong: double-applying the microphone calibration is a known trap, the signal chain is fiddly, and one user called the finished result "a black box you use, then forget for a year or two" ([AV Nirvana thread](https://www.avnirvana.com/threads/linux-guide.13946/post-117850)). DRC-FIR generates good filters but needs a separate convolver and does not apply them ([The Well-Tempered Computer](https://www.thewelltemperedcomputer.com/SW/AudioTools/RoomCorrection.htm)).
+- **Immersive layouts are rarely handled.** The usual guides are for stereo or 5.1. Roomtone's measurements and corrections are written for a 5.1.2 layout with height speakers.
+
+Roomtone's contribution is to **close the loop**: measure through the live chain, decide, apply with a safety net, and re-measure, with the microphone calibration and the level and distortion limits built in instead of left to the user.
+
+## How it differs from REW
+
+REW is the better *measurement and analysis* tool, with far more views, a huge user base and years of validation, and Roomtone does not replace it (the REW exports in `data/rew/` were used here). They do different jobs:
+
+| | REW | Roomtone |
+|---|---|---|
+| Main job | Measure and analyse, interactively | Measure, propose and apply, as a procedure |
+| Who drives it | You, step by step | A script (or the web page) runs the whole sequence |
+| Plays through your real chain | You set up the routing for each sweep | Plays through CamillaDSP's capture inputs and relinks for you |
+| Filters | Auto-EQ and filter export; you carry them to the player | Writes the delay, trim and EQ values CamillaDSP reads, with a backup |
+| Safety on the speakers | Your care | Output cap, microphone-clip and sub-distortion stops, timed trial with automatic rollback |
+| Multiple microphone positions | Yes, you average them | Prompts you to move the microphone and checks that it did |
+| Target | Your choice, flexible | Fixed to the author's bass-hump target for now |
+| Validation | Mature | **One room, one seat, one author** |
+
+## What Roomtone is not (yet)
+
+- **Not Dirac.** The corrections are delays, trims, polarity and parametric cuts. There is no mixed-phase or FIR correction and no target-curve library. Do not expect Dirac's results.
+- **Validated in one room only.** The author's 10 x 10 ft room, a Dayton iMM-6S microphone and a Z906 plus USB-interface chain. Most pass/fail thresholds are reasoned guesses, and the tests ran against a simulated room first. The author ran the five-position calibration at the rig and applied it (note of 2026-10-29), but this repository does not yet hold a published before-and-after of that run.
+- **Written with an AI assistant** and checked against simulated rooms and REW exports, not independently validated (see the note at the end).
+- **Tied to this project's setup.** It expects CamillaDSP, PipeWire and the router in [linux-theater-dsp](https://github.com/praveenchandrahas/linux-theater-dsp), and the shipped channel map is 5.1.2. Another layout means editing the channel tables.
+- **It plays loud, sustained low frequencies.** Read the safety note below before the first real run.
+
+If you try it in your own room, a report of what worked and what broke is the most useful contribution.
+
+## Parts
 
 | Kit | Question it answers |
 |---|---|
@@ -19,7 +71,7 @@ Everything here was written for one room and one seat; the kits are general enou
 | `scripts/rec.sh`, `scripts/tone-test.sh` | recording (mic gain) and a tone helper |
 | `tools/drifttest/` | does a second subwoofer (another clock) stay in phase with the first? Measures the delay between two playback paths over time (ppm drift, jitter, steps) |
 | `tools/miccal.py` | removes the measurement microphone's response from every recording the analysers read (see below) |
-| `autocal/` | **automated room calibration** ("our own Audyssey"): measures every speaker through the current CamillaDSP profile and proposes delay, trim, polarity, bass-EQ and heights corrections, with a local web page and graphs. Never applies anything by itself. Developed against a simulated room; on the real rig so far it has produced analysed single-position recordings and stopped, by design, at its noise gates; nothing has been applied. See `autocal/README.md` |
+| `autocal/` | **automated room calibration** (the Audyssey-style workflow, not its filters): measures every speaker through the current CamillaDSP profile and proposes delay, trim, polarity, bass-EQ and heights corrections, with a local web page and graphs. Never applies anything by itself. Developed against a simulated room, then run at the author's rig (five positions, applied, per the author's note of 2026-10-29). See `autocal/README.md` |
 | `gui/` | the local **status and control page** (`theater-ctld`, http://127.0.0.1:8765, this computer only): what is playing, profile, engine, CamillaDSP load, and switches for EQ, mode, flavours and engine. Moved here from linux-theater-dsp; it drives the router's `eq` command and never applies room corrections. See `gui/` and the section below |
 | `overlay/` | the same status and controls as an **mpv overlay**: press **C** in the player. Moved here from mpv-object-audio |
 | `data/` | small REW exports and the microphone calibration file (`data/README.md`); large recordings are not committed |
