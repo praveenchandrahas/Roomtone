@@ -45,8 +45,24 @@ REW is the better *measurement and analysis* tool, with far more views, a huge u
 | Filters | Auto-EQ and filter export; you carry them to the player | Writes the delay, trim and EQ values CamillaDSP reads, with a backup |
 | Safety on the speakers | Your care | Output cap, microphone-clip and sub-distortion stops, timed trial with automatic rollback |
 | Multiple microphone positions | Yes, you average them | Prompts you to move the microphone and checks that it did |
-| Target | Your choice, flexible | Fixed to the author's bass-hump target for now |
-| Validation | Mature | **One room, one seat, one author** |
+| Target | Your choice, flexible | Three built-in bass targets below 250 Hz (hump, house, flat); no full-range target curve |
+| Validation | Mature | **One room, one author** (multi-seat mode exists, but the one real run so far is the five-position FAIL run below) |
+
+## Related project: Omniphony Companion
+
+[Omniphony Companion](https://github.com/mgth/omniphony-companion) (mgth, GPL-3.0-or-later, Rust) is the closest project the author knows of. It is a calibration companion for the Omniphony renderer: it plays sweeps on the renderer's outputs, records a microphone channel, proposes delay and level alignment, and designs a minimum-phase correction filter per speaker plus a subwoofer step. The table below is taken from its README as read on 2026-10-30, not from running it.
+
+| | Omniphony Companion | Roomtone |
+|---|---|---|
+| Where it sits | Talks to the Omniphony renderer over a local TCP port; needs an Omniphony build that carries its calibration changes | Works on the CamillaDSP stage after the renderer, so it does not care what renders |
+| Interface | Native desktop app (egui) and CLI | Local web page, CLI and mpv overlay |
+| What it corrects | Delay and level alignment (marked experimental), per-speaker minimum-phase filters, sub integration | Delays, trims, polarity, parametric bass cuts toward a target, a height-speaker tone match. **No FIR or minimum-phase filters** |
+| Where the result lands | The renderer's configuration; saving stays a manual step in its Studio | CamillaDSP's `room.json`, with a backup and a 60 s trial that rolls back |
+| Evidence stated | Room correction "tested on simulated renderers only", sub integration "on simulated rooms only", hardware accuracy "experimental" | Simulated rooms, REW exports, and one real room (one five-position run, verdict FAIL, no measurement after applying) |
+
+They overlap on sweeps, recording and alignment, and differ on layer and on filters. Its per-speaker filters are something Roomtone deliberately does not do (see "Not Dirac" below). Do not apply delays in both: pick one layer, or the speaker is corrected twice. Both projects are early.
+
+Because of this project, the claim above that a Linux HTPC doing its own rendering has no calibrator is narrower than it reads: it holds for a CamillaDSP chain, not for Omniphony users in general.
 
 ## A real run: what the five-position measurement showed
 
