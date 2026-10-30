@@ -48,10 +48,21 @@ REW is the better *measurement and analysis* tool, with far more views, a huge u
 | Target | Your choice, flexible | Fixed to the author's bass-hump target for now |
 | Validation | Mature | **One room, one seat, one author** |
 
+## A real run: what the five-position measurement showed
+
+<p align="center"><img src="docs/img/autocal-five-position-20261028.png" alt="Roomtone autocal five-position run of 2026-10-28: front-left response at five microphone positions against the bass-hump target, and arrival time per speaker at the five positions. Verdict FAIL" width="900"></p>
+
+*Real data from the author's room (`data/autocal/20261028-151158/`; redraw with `python3 tools/make-autocal-figure.py`). The raw recordings (95 MB) are not committed.*
+
+- **The verdict was FAIL, and that is the tool working as designed.** The bass fit did not pass the leave-one-position-out check (the five positions disagreed), the 40 Hz signal-to-noise ratio was under 30 dB on FL, FR, FC, SL and SR, and one pilot chirp was off by about 3 ms (a possible xrun). Autocal therefore proposed **no bass EQ and no height-tone change**; it left the bass at 3.3 dB rms from the target before and after.
+- **It proposed only small delay changes**, the largest 0.9 ms (SR 2.72 to 3.61 ms; SL 3.00 to 3.66 ms), because the surrounds arrived about 0.9 to 1.1 ms before the front left at the seat.
+- **The positions really do differ.** With the microphone moved 20 cm, a speaker's arrival time moves by up to about 2 ms (SR), which is why single-position results should not be trusted below that.
+- **What is missing:** a measurement after applying a run, and a run that passes its gates. A quieter room (the author's noise floor was the limit) and then `autocal verify` would give the before-and-after this section lacks.
+
 ## What Roomtone is not (yet)
 
 - **Not Dirac.** The corrections are delays, trims, polarity and parametric cuts. There is no mixed-phase or FIR correction and no target-curve library. Do not expect Dirac's results.
-- **Validated in one room only.** The author's 10 x 10 ft room, a Dayton iMM-6S microphone and a Z906 plus USB-interface chain. Most pass/fail thresholds are reasoned guesses, and the tests ran against a simulated room first. The author ran the five-position calibration at the rig and applied it (note of 2026-10-29), but this repository does not yet hold a published before-and-after of that run.
+- **Validated in one room only.** The author's 10 x 10 ft room, a Dayton iMM-6S microphone and a Z906 plus USB-interface chain. Most pass/fail thresholds are reasoned guesses, and the tests ran against a simulated room first. The author ran five-position calibrations at the rig and applied one (note of 2026-10-29). The only five-position run whose data is in this repository (2026-10-28, below) ended with the verdict **FAIL**, and this repository holds **no measurement taken after applying anything**, so there is no before-and-after yet.
 - **Written with an AI assistant** and checked against simulated rooms and REW exports, not independently validated (see the note at the end).
 - **Tied to this project's setup.** It expects CamillaDSP, PipeWire and the router in [linux-theater-dsp](https://github.com/praveenchandrahas/linux-theater-dsp), and the shipped channel map is 5.1.2. Another layout means editing the channel tables.
 - **It plays loud, sustained low frequencies.** Read the safety note below before the first real run.
