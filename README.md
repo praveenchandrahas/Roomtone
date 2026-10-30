@@ -64,6 +64,12 @@ They overlap on sweeps, recording and alignment, and differ on layer and on filt
 
 Because of this project, the claim above that a Linux HTPC doing its own rendering has no calibrator is narrower than it reads: it holds for a CamillaDSP chain, not for Omniphony users in general.
 
+### Related project: Cavern QuickEQ
+
+[Cavern](https://github.com/VoidXH/Cavern) (VoidX) is an object-based spatial audio engine, and its **QuickEQ** is a room-correction tool built on it, with its own [user guide](https://cavern.sbence.hu/cavern/doc.php?p=QuickEQ). It has been developed since at least 2022, and a [NuGet package](https://www.nuget.org/packages/Cavern.QuickEQ) of the measurement library is at version 2.1.0 (January 2026). From its package page and a [2022 forum thread](https://www.avnirvana.com/threads/easier-alternative-to-room-rq-wizard-rew.10059) (the guide itself would not load for the author), it generates FIR, zero-phase and peaking-filter corrections, makes sweeps and noise, can correct from several microphones at once, and can export an impulse-response correction that includes gain and delay. Its developer also described a time-domain "Pro" mode like Dirac Live as planned. The application is Windows-first (its UI is not open source; the developer says it runs under Wine).
+
+On filters, maturity and age it is ahead of Roomtone, and the author does not claim otherwise. The differences that remain are about workflow: QuickEQ produces corrections for you to carry into a player, while Roomtone measures through a live CamillaDSP chain, applies with a backup and a timed rollback, and has output and distortion stops. The author did not find those safety features described for QuickEQ, which says only that the pages were not readable, not that they are absent. A Linux user with a Windows machine can use QuickEQ today; Roomtone is for people who want the loop to run on the Linux box itself.
+
 ## A real run: what the five-position measurement showed
 
 <p align="center"><img src="docs/img/autocal-five-position-20261028.png" alt="Roomtone autocal five-position run of 2026-10-28: front-left response at five microphone positions against the bass-hump target, and arrival time per speaker at the five positions. Verdict FAIL" width="900"></p>
