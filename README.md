@@ -1,5 +1,7 @@
 # Roomtone
 
+[![CI](https://github.com/praveenchandrahas/Roomtone/actions/workflows/ci.yml/badge.svg)](https://github.com/praveenchandrahas/Roomtone/actions/workflows/ci.yml) *(CI = unit tests, lint, and a package install/remove test in a clean Ubuntu 24.04 container. A green badge does not show the software works on a real rig.)*
+
 ![Roomtone: measure, analyse, calibrate. Open tools for home-theatre acoustics](docs/img/roomtone-banner.png)
 
 > **Part of the [Software Defined Home Theatre](https://github.com/praveenchandrahas/Software-Defined-Home-Theatre) project.** The main repository holds the documentation, build log, results and the installer checks; this is one of its parts. Sibling repositories: [linux-theater-dsp](https://github.com/praveenchandrahas/linux-theater-dsp) (router and CamillaDSP configs) · [mpv-object-audio](https://github.com/praveenchandrahas/mpv-object-audio) (player and Atmos wrapper) · [seekthumbs](https://github.com/praveenchandrahas/seekthumbs) (seek-bar thumbnails) · [mpv-shelf](https://github.com/praveenchandrahas/mpv-shelf) (film browser for mpv).
@@ -8,6 +10,22 @@
 **Roomtone is open tooling for measuring a Linux home theatre and calibrating it in a closed loop: it plays sweeps through your live audio chain, records them with a measurement microphone, works out what is wrong with each speaker, proposes corrections, and (only when you say so) applies them to CamillaDSP with a timed trial and a rollback.** The closest commercial analogue is the *workflow* of an Audyssey- or Dirac-style auto-calibrator, on a PC, in the open. It is not a clone of their filters; see [what it is not](#what-roomtone-is-not-yet) before comparing.
 
 ![The Roomtone control page (simulated data)](docs/img/control-dark.png)
+
+## Install (pre-release, experimental)
+
+Releases are marked **pre-release** on the [releases page](https://github.com/praveenchandrahas/Roomtone/releases). Download the `.deb` and `SHA256SUMS` from one release, check, then install:
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+sudo apt install ./Roomtone_0.1.0_all.deb
+roomtone-setup --dry-run   # then: roomtone-setup install
+```
+
+Depends on `linux-theater-dsp` (install that one first). To use only the calibration tool and web page without the system package: `pipx install git+https://github.com/praveenchandrahas/Roomtone` gives the `autocal` and `autocal-web` commands (not on PyPI).
+
+The package puts files under `/usr` only. Its install and remove scripts do not enable or start services, do not write into any home folder, and do not touch CamillaDSP or PipeWire configuration; the setup command above does the per-user part, and `--dry-run` shows what it would do first. Details, the other repositories' packages, and the one-command installer are in the main repository's [packaging notes](https://github.com/praveenchandrahas/Software-Defined-Home-Theatre/blob/main/docs/packaging.md).
+
+What was checked: written with an AI assistant; checked against simulated rooms and REW exports; used and checked by the author in his own room (one room, one author). No external or second-person validation yet. The packages are unsigned. CI installs and removes them in clean Ubuntu 24.04; the packaging itself has not been run on the author's own rig.
 
 ## What it does
 

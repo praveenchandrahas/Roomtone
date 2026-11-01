@@ -1,0 +1,80 @@
+#!/bin/bash
+# roomtone-setup: turns the packaged Roomtone status page on or off for ONE user. The package itself never does this.
+#
+#   roomtone-setup [--dry-run] install [--overlay] [--bindings]
+#                       enable and start theater-ctld.service (http://127.0.0.1:8765, this computer only);
+#                       --overlay also copies the mpv status panel into ~/.config/mpv (and ~/.config/mpv-object-audio if it exists),
+#                       --bindings also adds its key (c) to input.conf, once
+#   roomtone-setup [--dry-run] uninstall
+#                       stop and disable the page; take the overlay out again
+#   roomtone-setup check            report only
+#
+# It does NOT touch CamillaDSP or PipeWire configuration. --dry-run prints what would be done and changes nothing.
+set -u
+DRY=0; ACTION=; OVERLAY=0; BINDINGS=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run|-n) DRY=1 ;;
+    --overlay) OVERLAY=1 ;;
+    --bindings) OVERLAY=1; BINDINGS=1 ;;
+    install|uninstall|check) ACTION=$a ;;
+    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown argument: $a (try --help)" >&2; exit 2 ;;
+  esac
+done
+[ -n "$ACTION" ] || { echo "usage: roomtone-setup [--dry-run] install|uninstall|check" >&2; exit 2; }
+if [ "$(id -u)" = 0 ] && [ "$DRY" = 0 ] && [ "$ACTION" != check ] && [ -z "${SDHT_ALLOW_ROOT:-}" ]; then
+  echo "Run roomtone-setup as your normal user, not as root." >&2; exit 1
+fi
+UNIT=theater-ctld.service
+BIN=${HOME:-/nonexistent}/.local/bin
+UDIR=${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/systemd/user
+OVL=/usr/lib/roomtone/overlay/install-theater-status.sh
+
+run() { if [ "$DRY" = 1 ]; then echo "would run: $*"; else echo "+ $*"; "$@"; fi; }
+have_systemd_user() { systemctl --user show-environment >/dev/null 2>&1; }
+
+shadowing() {
+  local found=0 f
+  for f in theater-ctld autocal; do
+    if [ -e "$BIN/$f" ]; then echo "NOTE: $BIN/$f exists: a hand-installed copy; if $BIN is before /usr/bin on PATH it hides the packaged command."; found=1; fi
+  done
+  if [ -e "$UDIR/$UNIT" ]; then echo "NOTE: $UDIR/$UNIT exists and overrides the packaged unit."; found=1; fi
+  if [ -d "${HOME:-/nonexistent}/.local/share/theater-ctld" ]; then echo "NOTE: ~/.local/share/theater-ctld exists (hand-installed page files; the packaged unit does not use them)."; found=1; fi
+  [ "$found" = 0 ] && echo "no hand-installed copies found in $BIN or $UDIR"
+  [ "$found" = 1 ] && echo "      To use the packaged versions, remove those copies (gui/install-ctld.sh remove does it)."
+  return 0
+}
+
+case "$ACTION" in
+  check)
+    echo "== roomtone check =="
+    if have_systemd_user; then echo "$UNIT: $(systemctl --user is-enabled "$UNIT" 2>&1 | head -1) / $(systemctl --user is-active "$UNIT" 2>&1 | head -1)"
+    else echo "no user systemd session here; services not checked"; fi
+    shadowing
+    command -v eq >/dev/null 2>&1 && echo "eq (linux-theater-dsp): $(command -v eq)" || echo "eq: not found (install linux-theater-dsp)"
+    ;;
+  install)
+    shadowing
+    command -v eq >/dev/null 2>&1 || { echo "eq not found: the status page needs the linux-theater-dsp package." >&2; [ "$DRY" = 1 ] || exit 1; }
+    if [ "$DRY" = 0 ] && ! have_systemd_user; then echo "No user systemd session available; nothing was changed." >&2; exit 1; fi
+    run systemctl --user daemon-reload
+    run systemctl --user enable --now "$UNIT"
+    echo "status page: http://127.0.0.1:8765   autocal: /autocal   layout: /layout   (this computer only; nothing listens on the network)"
+    echo "runs and results: ~/.local/share/roomtone/runs"
+    if [ "$OVERLAY" = 1 ]; then
+      if [ "$BINDINGS" = 1 ]; then run "$OVL" --bindings; else run "$OVL"; fi
+    else
+      echo "mpv status panel not installed (add --overlay, or --bindings to also add its key)."
+    fi
+    if [ "$DRY" = 1 ]; then echo "(dry run: nothing was changed)"; fi
+    ;;
+  uninstall)
+    if [ "$DRY" = 0 ] && ! have_systemd_user; then echo "No user systemd session available; nothing was changed." >&2; exit 1; fi
+    run systemctl --user disable --now "$UNIT"
+    run systemctl --user daemon-reload
+    run "$OVL" remove
+    echo "Stopped. Your runs (~/.local/share/roomtone/runs) and the page token (~/.local/state/theater/ctl-token) are left in place."
+    if [ "$DRY" = 1 ]; then echo "(dry run: nothing was changed)"; fi
+    ;;
+esac

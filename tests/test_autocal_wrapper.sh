@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/autocal with a fake pactl and a fake python: what it sets, and when it leaves the mic alone. No hardware.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir "$T/bin"
 cat > "$T/bin/pactl" <<'P'

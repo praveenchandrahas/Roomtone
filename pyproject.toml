@@ -1,0 +1,36 @@
+# Makes `pipx install git+https://github.com/praveenchandrahas/Roomtone` work. Installs the autocal command (measurement, analysis, simulation,
+# report) and autocal-web (its results page, 127.0.0.1 only). The status page, the services and the mpv overlay need the Debian package.
+# Not published to PyPI (that needs an account and a token).
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roomtone"
+dynamic = ["version"]
+description = "Room measurement and automatic CamillaDSP room-profile proposals for a home theatre (autocal)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Praveen Chandrahas" }]
+dependencies = ["numpy", "scipy", "pyyaml"]
+
+[project.urls]
+Homepage = "https://github.com/praveenchandrahas/Roomtone"
+
+[project.scripts]
+autocal = "autocal.cli:main"
+autocal-web = "autocal.web.server:main"
+
+[tool.setuptools]
+packages = ["autocal", "autocal.sim", "autocal.web", "autocal._tools"]
+
+[tool.setuptools.package-dir]
+# autocal/ir.py loads tools/miccal.py; in an installed package that folder travels as autocal/_tools
+"autocal._tools" = "tools"
+
+[tool.setuptools.package-data]
+"autocal.web" = ["static/*"]
+
+[tool.setuptools.dynamic]
+version = { file = ["VERSION"] }

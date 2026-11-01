@@ -30,7 +30,9 @@ class PlacementError(RuntimeError):
 
 
 def _load_miccal():
-    p = os.path.join(HERE, "..", "tools", "miccal.py")
+    p = os.path.join(HERE, "..", "tools", "miccal.py")          # a checkout, or /usr/lib/roomtone (the Debian package)
+    if not os.path.isfile(p):
+        p = os.path.join(HERE, "_tools", "miccal.py")           # a pip/pipx install (pyproject.toml maps tools/ to autocal/_tools)
     spec = importlib.util.spec_from_file_location("miccal", p)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)

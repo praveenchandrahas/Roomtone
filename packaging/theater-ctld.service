@@ -1,0 +1,21 @@
+[Unit]
+Description=Theatre status and control page (127.0.0.1 only)
+After=theater-router.service
+Wants=theater-router.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/theater-ctld
+Environment=THEATER_AUTOCAL_RUNS=%h/.local/share/roomtone/runs
+Environment=THEATER_AUTOCAL_REPO=/usr/lib/roomtone
+Environment=AUTOCAL_RUNS_DIR=%h/.local/share/roomtone/runs
+Environment=SET_EQ=/usr/lib/linux-theater-dsp/set-eq.py
+Environment=PYTHONDONTWRITEBYTECODE=1
+# autocal runs and the apply trial watchdog are children of this service: restarting the page must not kill a run or the watchdog that reverts a trial
+KillMode=process
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
