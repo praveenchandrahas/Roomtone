@@ -93,6 +93,15 @@ check("ASS escaping neutralises braces and backslashes", "{" not in api.esc("a{b
 api.state.status = lua.table_from({"eq": {"switch": "off"}, "dsp": {}, "mpv": {}}, recursive=True)
 check("a sparse status does not crash the panel", "OFF" in "\n".join(api.lines_for_panel().values()))
 
+# ---- layout line (docs/layouts.md): nothing for the author's 5.1.2, a line for any other layout, a warning for a broken file
+for lay, want, absent in (({"name": "5.1.2", "error": None, "channels": [{}] * 8}, None, "Layout:"),
+                          ({"name": "7.1.4", "channels": [{}] * 12}, "Layout:  7.1.4  (12 speakers)", None),
+                          ({"name": "5.1.2", "error": "line 3: bad port"}, "file invalid, using 5.1.2", None)):
+    st2 = dict(STATUS); st2["layout"] = lay
+    api.state.status = lua.table_from(st2, recursive=True)
+    t2 = "\n".join(api.lines_for_panel().values())
+    check(f"overlay layout line for {lay['name']} {'(error)' if lay.get('error') else ''}", (want in t2) if want else (absent not in t2), t2)
+
 # ---- rows: current value, next value, guards
 api, calls, msgs, bindings, osd, overlay, st, lua = world()
 api.state.status = lua.table_from(STATUS, recursive=True)

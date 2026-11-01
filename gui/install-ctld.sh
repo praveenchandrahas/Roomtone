@@ -19,13 +19,14 @@ if [ "${1:-}" = remove ]; then
   exit 0
 fi
 
-[ -f "$HERE/theater-ctld" ] && [ -f "$REPO/index.html" ] && [ -f "$REPO/autocal.html" ] && [ -f "$REPO/$UNIT" ] || { echo "Run this from a full Roomtone checkout (gui/ folder)."; exit 1; }
+[ -f "$HERE/theater-ctld" ] && [ -f "$REPO/index.html" ] && [ -f "$REPO/autocal.html" ] && [ -f "$REPO/layout.html" ] && [ -f "$REPO/$UNIT" ] || { echo "Run this from a full Roomtone checkout (gui/ folder)."; exit 1; }
 command -v eq >/dev/null || [ -x "$BIN/eq" ] || { echo "'eq' not found: run linux-theater-dsp's ./scripts/install-autoroute.sh first."; exit 1; }
 "$BIN/eq" status --json 2>/dev/null | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null || { echo "Your installed 'eq' has no 'status --json' yet: run linux-theater-dsp's ./scripts/install-autoroute.sh to update it, then re-run this."; exit 1; }
 mkdir -p "$BIN" "$WEB" "$UNITDIR"
 install -m 755 "$HERE/theater-ctld" "$BIN/theater-ctld"
 install -m 644 "$REPO/index.html" "$WEB/index.html"
 install -m 644 "$REPO/autocal.html" "$WEB/autocal.html"
+install -m 644 "$REPO/layout.html" "$WEB/layout.html"
 # the autocal page reads this checkout's runs/ folder (where `autocal run` writes) and runs this checkout's autocal package
 CHECKOUT=$(cd "$HERE/.." && pwd)
 sed -e "s|^Environment=THEATER_AUTOCAL_RUNS=.*|Environment=THEATER_AUTOCAL_RUNS=$CHECKOUT/runs|" -e "s|^Environment=THEATER_AUTOCAL_REPO=.*|Environment=THEATER_AUTOCAL_REPO=$CHECKOUT|" "$REPO/$UNIT" > "$UNITDIR/$UNIT"
@@ -34,7 +35,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now "$UNIT" 2>&1 | sed 's/^/  /'
 sleep 1
 echo
-echo "theater-ctld: $(systemctl --user is-active $UNIT)   page: http://127.0.0.1:8765   autocal: http://127.0.0.1:8765/autocal   (this computer only; nothing listens on the network)"
+echo "theater-ctld: $(systemctl --user is-active $UNIT)   page: http://127.0.0.1:8765   autocal: http://127.0.0.1:8765/autocal   layout: http://127.0.0.1:8765/layout   (this computer only; nothing listens on the network)"
 ss -ltn 2>/dev/null | grep -E ':8765\b' | sed 's/^/  listening: /'
 echo "autostart: $(systemctl --user is-enabled "$UNIT" 2>/dev/null || echo NOT-ENABLED)   (the page starts with your desktop session)"
 lg=$(loginctl show-user "${USER:-$(id -un)}" -p Linger --value 2>/dev/null)

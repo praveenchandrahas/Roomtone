@@ -39,7 +39,8 @@ PMODES = ("auto", "film", "stereo", "bed")
 WS_READ_ONLY = ("GetState", "GetCaptureRate", "GetBufferLevel", "GetClippedSamples", "GetProcessingLoad",
                 "GetCaptureSignalPeak", "GetPlaybackSignalPeak", "GetPlaybackSignalRms", "GetVersion")
 # hardware order of CamillaDSP's 8 playback channels (linux-theater-dsp set-eq.py: FL FR RL RR FC LFE SL SR; RL and RR are the two ceiling speakers)
-LAYOUT = ("FL", "FR", "TFL", "TFR", "FC", "LFE", "SL", "SR")
+AUTHOR_LAYOUT_NAMES = ("FL", "FR", "TFL", "TFR", "FC", "LFE", "SL", "SR")     # what the status page has always shown for the author's 5.1.2
+LAYOUT = AUTHOR_LAYOUT_NAMES                                                  # kept for the tests; layout_names() is what the stream uses
 LEVEL_HZ = 20
 LEVEL_STREAMS = threading.BoundedSemaphore(4)
 
@@ -145,8 +146,9 @@ def ws_query(commands, host=None, port=None, timeout=1.0):
 def level_frame(sess):
     """One sample of the 8 playback channels (after EQ, what drives the amplifier inputs), in dBFS, in LAYOUT order. None where unavailable."""
     v = sess.query(["GetPlaybackSignalPeak", "GetPlaybackSignalRms"])
+    n = len(layout_names())
     def clean(a):
-        return [round(float(x), 1) for x in a] if isinstance(a, list) and len(a) == len(LAYOUT) and all(isinstance(x, (int, float)) for x in a) else None
+        return [round(float(x), 1) for x in a] if isinstance(a, list) and len(a) == n and all(isinstance(x, (int, float)) for x in a) else None
     return {"ok": True, "t": round(time.time(), 3), "peak": clean(v["GetPlaybackSignalPeak"]), "rms": clean(v["GetPlaybackSignalRms"])}
 
 
@@ -645,6 +647,175 @@ def autocal_trial(req):
         AUTOCAL_LOCK.release()
 
 
+# ------------------------------------------------------------------ speaker layout (docs/layouts.md)
+_LAY = {"mod": None, "tried": False}
+LAYOUT_BODY_MAX = 16384
+IDENTIFY_LOCK = threading.Lock()
+IDENTIFY_LAST = {"t": 0.0}
+
+
+def layout_module():
+    """layout.py (the shared, validating loader) from the autocal checkout, linux-theater-dsp's scripts/ or the installed copy. None if not found."""
+    if _LAY["tried"]:
+        return _LAY["mod"]
+    _LAY["tried"] = True
+    import importlib.util
+    here = os.path.dirname(os.path.realpath(__file__))
+    cands = [os.environ.get("THEATER_LAYOUT_PY"), os.path.join(autocal_repo() or "/nonexistent", "autocal", "layout.py"),
+             os.path.join(here, "..", "autocal", "layout.py"), os.path.expanduser("~/.local/share/theater-ctld/layout.py"),
+             os.path.expanduser("~/.local/lib/theater/layout.py")]
+    for c in cands:
+        if c and os.path.isfile(c):
+            try:
+                spec = importlib.util.spec_from_file_location("roomtone_layout", c)
+                mod = importlib.util.module_from_spec(spec); sys.modules["roomtone_layout"] = mod; spec.loader.exec_module(mod)
+                _LAY["mod"] = mod
+                break
+            except Exception:
+                continue
+    return _LAY["mod"]
+
+
+def active_layout():
+    """(Layout or None, error text or None). Never raises. A missing file means the built-in 5.1.2, like the router does."""
+    mod = layout_module()
+    if mod is None:
+        return None, "layout.py not found"
+    try:
+        return mod.load(None, strict=False), None
+    except mod.LayoutError as e:
+        try:
+            return mod.default_layout(), f"the layout file is invalid ({e}); showing the built-in 5.1.2"
+        except Exception:
+            return None, str(e)
+
+
+def layout_names(lay=None):
+    """Channel names in CamillaDSP playback (port) order, as the level stream labels them."""
+    lay = lay or active_layout()[0]
+    if lay is None or lay.is_author_512():
+        return list(AUTHOR_LAYOUT_NAMES)
+    return list(lay.hw_order)
+
+
+def layout_plan(lay):
+    """What the pages need to draw a plan view and meters: per channel name, role, port index, azimuth, elevation."""
+    return [{"name": n, "role": lay.by_name[n]["role"], "port": lay.port(n), "az": lay.by_name[n].get("azimuth"), "el": lay.by_name[n].get("elevation")}
+            for n in lay.hw_order]
+
+
+def _upmix(lay):
+    kinds, why = lay.upmix_support()
+    return {"fits": bool(kinds.get("stereo")), "kinds": kinds, "why": why}
+
+
+def _plan_or_none():
+    lay = active_layout()[0]
+    return layout_plan(lay) if lay else None
+
+
+def layout_overview():
+    mod = layout_module()
+    if mod is None:
+        return 503, {"error": "layout.py not found (re-run gui/install-ctld.sh from your checkout)"}
+    lay, err = active_layout()
+    try:
+        found = mod.detect_interfaces()
+    except Exception:
+        found = []
+    detected = [{"device": d, "ports": ps, "suggested": mod.suggest_preset(len(ps))} for d, ps in found][:8]
+    path = mod.path_for(None)
+    return 200, {"layout": lay.to_dict() if lay else None, "error": err, "path": path.replace(os.path.expanduser("~"), "~"), "file_exists": os.path.isfile(path),
+                 "source": getattr(lay, "source", None), "plan": layout_plan(lay) if lay else [], "upmix": _upmix(lay) if lay else None,
+                 "presets": [{"name": n, "ports": mod.PRESETS[n]["output"]["channels"], "channels": [c["name"] for c in mod.PRESETS[n]["channels"]],
+                              "author": n == mod.AUTHOR_PRESET} for n in mod.PRESET_ORDER],
+                 "preset_docs": {n: mod.PRESETS[n] for n in mod.PRESET_ORDER}, "detected": detected,
+                 "limits": {"identify_dbfs": -40, "identify_s": 2}}
+
+
+def _draft(req):
+    mod = layout_module()
+    if mod is None:
+        raise ValueError("layout.py not found")
+    d = req.get("layout")
+    if not isinstance(d, dict):
+        raise ValueError("layout must be an object")
+    try:
+        return mod, mod.from_dict(d, source="Layout page")
+    except mod.LayoutError as e:
+        raise ValueError(str(e))
+
+
+def layout_validate(req):
+    try:
+        mod, lay = _draft(req)
+    except ValueError as e:
+        return 200, {"ok": False, "error": str(e)}
+    return 200, {"ok": True, "layout": lay.to_dict(), "plan": layout_plan(lay), "upmix": _upmix(lay), "summary": lay.summary()}
+
+
+RESTART_NOTE = ("Saved. Nothing changes until the pieces that read the layout restart: run set-eq.py (or `eq on`) to rebuild the CamillaDSP config, restart "
+                "theater-route / the autoroute unit, and restart theater-ctld. Nothing was restarted for you, and no audio setting was touched.")
+
+
+def layout_save(req):
+    try:
+        mod, lay = _draft(req)
+    except ValueError as e:
+        return 400, {"error": str(e)}
+    if req.get("confirm") is not True:
+        return 409, {"error": "confirm", "message": f"This writes {mod.path_for(None).replace(os.path.expanduser('~'), '~')} (the previous file is backed up first). It does not restart anything."}
+    if _child_alive() or _active_run(autocal_runs_root() or "") or trial_state():
+        return 409, {"error": "an autocal run or trial is in progress: finish or stop it first, so a run never sees two layouts"}
+    try:
+        res = mod.save(lay)
+    except (mod.LayoutError, OSError) as e:
+        return 500, {"error": f"could not save ({e.__class__.__name__}: {e})"}
+    path, backup = (res if isinstance(res, tuple) else (res, None))
+    home = os.path.expanduser("~")
+    return 200, {"ok": True, "path": str(path).replace(home, "~"), "backup": str(backup).replace(home, "~") if backup else None, "restart": RESTART_NOTE}
+
+
+def layout_identify(req):
+    """A short quiet tone on ONE speaker. Runs `python3 -m autocal --layout DRAFT identify NAME` (fixed argv, no shell). The level (-40 dBFS), the length (2 s)
+    and the one-channel rule live in autocal/identify.py and cannot be changed from here."""
+    try:
+        mod, lay = _draft(req)
+    except ValueError as e:
+        return 400, {"error": str(e)}
+    name = req.get("speaker")
+    if not isinstance(name, str) or name not in lay.result_order:
+        return 400, {"error": "speaker must be one of the channel names in the layout"}
+    root = autocal_runs_root(); repo = autocal_repo(root)
+    if not repo:
+        return 409, {"error": "autocal is not set up here (no autocal package); re-run gui/install-ctld.sh from your checkout"}
+    if req.get("confirm") is not True:
+        return 409, {"error": "confirm", "message": f"Plays a quiet 2 s tone (at most -40 dBFS) on {name} only, through CamillaDSP. Stay clear of the speaker's ear-level path; stop with the Stop button of your player or `eq off`."}
+    if not IDENTIFY_LOCK.acquire(blocking=False):
+        return 429, {"error": "a tone is already playing"}
+    try:
+        if _child_alive() or _active_run(root or "") or trial_state():
+            return 409, {"error": "an autocal run or trial is in progress: no tones now"}
+        if time.time() - IDENTIFY_LAST["t"] < 1.0:
+            return 429, {"error": "wait a second between tones"}
+        IDENTIFY_LAST["t"] = time.time()
+        os.makedirs(STATE_DIR, exist_ok=True)
+        tmp = os.path.join(STATE_DIR, "layout-draft.yml")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(lay.to_yaml())
+        try:
+            r = subprocess.run([sys.executable, "-m", "autocal", "--layout", tmp, "identify", name], cwd=repo, env=_autocal_env(root or STATE_DIR, repo),
+                               capture_output=True, text=True, timeout=12, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as e:
+            return 500, {"error": f"could not play ({e.__class__.__name__})"}
+        if r.returncode != 0:
+            return 502, {"error": ((r.stderr or r.stdout).strip().splitlines() or ["identify failed"])[-1][:300]}
+        return 200, {"ok": True, "speaker": name, "port": lay.port(name), "dbfs": -40, "seconds": 2}
+    finally:
+        IDENTIFY_LOCK.release()
+
+
 # ------------------------------------------------------------------ HTTP
 def load_token():
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -717,6 +888,15 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 return self._send(500, {"error": "autocal.html not found (THEATER_WEB_DIR); re-run gui/install-ctld.sh"})
             return self._send(200, html.replace(b"__TOKEN__", TOKEN.encode()), "text/html")
+        if path in ("/layout", "/layout.html"):
+            try:
+                html = open(os.path.join(WEB_DIR, "layout.html"), "rb").read()
+            except OSError:
+                return self._send(500, {"error": "layout.html not found (THEATER_WEB_DIR); re-run gui/install-ctld.sh"})
+            return self._send(200, html.replace(b"__TOKEN__", TOKEN.encode()), "text/html")
+        if path == "/v1/layout":
+            code, body = layout_overview()
+            return self._send(code, body)
         if path == "/v1/autocal":
             return self._send(200, autocal_overview())
         if path == "/v1/autocal/preview":
@@ -758,7 +938,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(("data: " + json.dumps({"layout": LAYOUT, "hz": LEVEL_HZ}) + "\n\n").encode()); self.wfile.flush()
+            self.wfile.write(("data: " + json.dumps({"layout": layout_names(), "channels": _plan_or_none(), "hz": LEVEL_HZ}) + "\n\n").encode()); self.wfile.flush()
             sess, step = None, 1.0 / LEVEL_HZ
             try:
                 while True:
@@ -789,19 +969,25 @@ class Handler(BaseHTTPRequestHandler):
         if not self._gate():
             return
         ppath = self.path.split("?", 1)[0]
-        if ppath not in ("/v1/action", "/v1/autocal/control", "/v1/autocal/start", "/v1/autocal/apply", "/v1/autocal/trial"):
+        if ppath not in ("/v1/action", "/v1/autocal/control", "/v1/autocal/start", "/v1/autocal/apply", "/v1/autocal/trial",
+                         "/v1/layout/validate", "/v1/layout/save", "/v1/layout/identify"):
             return self._send(404, {"error": "not found"})
         if not hmac.compare_digest((self.headers.get("X-Theater-Token") or "").encode(), TOKEN.encode()):
             return self._send(401, {"error": "token missing or wrong"})
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            req = json.loads(self.rfile.read(min(n, 4096)).decode() or "{}")
+            cap = LAYOUT_BODY_MAX if ppath.startswith("/v1/layout/") else 4096
+            if n > cap:
+                self.close_connection = True
+                return self._send(413, {"error": "body too large"}, extra={"Connection": "close"})
+            req = json.loads(self.rfile.read(n).decode() or "{}")
             if not isinstance(req, dict):
                 raise ValueError
         except (ValueError, OSError):
             return self._send(400, {"error": "body must be a JSON object"})
         code, body = {"/v1/autocal/control": autocal_control, "/v1/autocal/start": autocal_start, "/v1/autocal/apply": autocal_apply,
-                      "/v1/autocal/trial": autocal_trial}.get(ppath, run_action)(req)
+                      "/v1/autocal/trial": autocal_trial, "/v1/layout/validate": layout_validate, "/v1/layout/save": layout_save,
+                      "/v1/layout/identify": layout_identify}.get(ppath, run_action)(req)
         self._send(code, body)
 
 

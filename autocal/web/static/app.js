@@ -39,8 +39,16 @@ function showBanner(msg, isErr) {
   banner.hidden = false; banner.textContent = msg; banner.className = "banner" + (isErr ? " err" : "");
 }
 function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
-function chColor(ch) { const i = ["FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR"].indexOf(ch); return "c" + (i < 0 ? 7 : i); }
-function chShape(ch) { const i = ["FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR"].indexOf(ch); return SHAPES[i < 0 ? 0 : i]; }
+/* Channel order, beds and heights come from the run's own layout (results.json version 2, docs/layouts.md); version-1 runs are the author's 5.1.2. */
+const AUTHOR_ORDER = ["FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR"];
+let CH_ORDER = AUTHOR_ORDER, LAY_BED = ["FL", "FR", "FC", "SL", "SR"], LAY_HEIGHT = ["RL", "RR"];
+function useLayout(R) {
+  const L = R && R.layout && Array.isArray(R.layout.channels) ? R.layout.channels : null;
+  if (!L) { CH_ORDER = AUTHOR_ORDER; LAY_BED = ["FL", "FR", "FC", "SL", "SR"]; LAY_HEIGHT = ["RL", "RR"]; return; }
+  CH_ORDER = L.map(c => c.name); LAY_BED = L.filter(c => c.role === "bed").map(c => c.name); LAY_HEIGHT = L.filter(c => c.role === "height").map(c => c.name);
+}
+function chColor(ch) { const i = CH_ORDER.indexOf(ch); return "c" + (i < 0 ? 7 : i % 8); }
+function chShape(ch) { const i = CH_ORDER.indexOf(ch); return SHAPES[i < 0 ? 0 : i % SHAPES.length]; }
 function pmean(arrs) {
   const n = arrs[0].length, out = new Array(n);
   for (let i = 0; i < n; i++) { let s = 0; for (const a of arrs) s += Math.pow(10, a[i] / 10); out[i] = 10 * Math.log10(s / arrs.length); }
@@ -341,6 +349,7 @@ async function renderResults(id) {
     main.appendChild(h("section", { class: "card" }, h("p", { text: e.status === 404 ? "No results yet for this run." : "Could not load results: " + e.message }), h("a", { class: "btn", href: "#/run/" + id }, "Open the live view")));
     return;
   }
+  useLayout(R);
   const chs = R.channels, F = R.freq;
   // header, verdict
   main.appendChild(h("h1", null, "Results ", h("code", { text: R.id })));
@@ -497,7 +506,7 @@ function buildBass(R) {
 
 function buildHeights(R) {
   const H = R.heights, F = R.freq, box = h("div"), lg = h("div");
-  const BED = ["FL", "FR", "FC", "SL", "SR"].filter(c => R.response_db[c]), HT = ["RL", "RR"].filter(c => R.response_db[c]);
+  const BED = LAY_BED.filter(c => R.response_db[c]), HT = LAY_HEIGHT.filter(c => R.response_db[c]);
   let content;
   if (!BED.length || HT.length < 1) { content = h("p", { class: "note", text: "Heights or bed channels missing from this run." }); }
   else {
@@ -515,7 +524,7 @@ function buildHeights(R) {
       { type: "line", x: F, y: bed, cls: "c0", width: 3 },
       { type: "line", x: F, y: before, cls: "c1", width: 2 },
       { type: "line", x: F, y: after, cls: "c1", dash: "7 4", width: 2.5 }], readout, aria: "Ceiling heights against the bed speakers, before and after the proposed tone filters" });
-    makeLegend(lg, [{ label: "Bed average (FL FR FC SL SR)", cls: "c0", width: 3 }, { label: "Heights now (RL RR)", cls: "c1" }, { label: "Heights after proposal", cls: "c1", dash: "7 4", width: 2.5 }]);
+    makeLegend(lg, [{ label: "Bed average (" + BED.join(" ") + ")", cls: "c0", width: 3 }, { label: "Heights now (" + HT.join(" ") + ")", cls: "c1" }, { label: "Heights after proposal", cls: "c1", dash: "7 4", width: 2.5 }]);
   }
   return sectionCard("sec-heights", "Heights against the bed",
     h("p", { class: "note" }, "Ceiling pair (RL, RR) compared with the bed speakers; the tone filters are fitted from 170 Hz to 5 kHz only."),

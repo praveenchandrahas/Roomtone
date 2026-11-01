@@ -237,6 +237,9 @@ def parser():
     sub.add_parser("rollback", help="restore the latest backup")
     s = sub.add_parser("verify", help="re-measure through the applied profile and grade it"); common(s); s.add_argument("run")
     s.add_argument("--simulate", action="store_true")
+    s = sub.add_parser("identify", help="play a short quiet tone (at most -40 dBFS, 2 s) on ONE speaker so you can check which output it is on")
+    s.add_argument("speaker", help="a speaker name from the layout (e.g. FL, SL, TFL)")
+    s.add_argument("--dry", action="store_true", help="check the name and the tone, play nothing")
     sub.add_parser("_watchdog", help=argparse.SUPPRESS)
     return p
 
@@ -275,6 +278,17 @@ def main(argv=None):
             return cmd_rollback(a)
         if a.cmd == "verify":
             return cmd_verify(a)
+        if a.cmd == "identify":
+            from . import identify as ID
+            try:
+                if a.dry:
+                    ID.tone(a.speaker); print(f"ok: {a.speaker} is on port {ST.ACTIVE.port(a.speaker)}; would play {ID.IDENTIFY_MAX_S:.0f} s at {ID.IDENTIFY_MAX_DBFS:.0f} dBFS (nothing played)"); return 0
+                ID.play(a.speaker)
+            except ID.IdentifyError as e:
+                print(f"identify: {e}", file=sys.stderr); return 2
+            except Exception as e:                       # backend problems (no PipeWire, no CamillaDSP): say so plainly
+                print(f"identify failed: {e}", file=sys.stderr); return 1
+            return 0
         if a.cmd == "_watchdog":
             install.watchdog(); return 0
     except LevelCapError as e:

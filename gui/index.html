@@ -250,36 +250,60 @@ try { const es = new EventSource("/v1/events"); es.onmessage = e => render(JSON.
 
 /* ------------------------------------------------------------------ live sound field */
 const FLOOR = -54;                                    // dBFS shown as empty
-const SPK = {                                         // plan view, normalised to the drawing: x left→right, y screen→back wall
+const SPK0 = {                                         // plan view, normalised to the drawing: x left→right, y screen→back wall
   FL: { x: .20, y: .22, kind: "bed" }, FC: { x: .50, y: .15, kind: "bed" }, FR: { x: .80, y: .22, kind: "bed" },
   SL: { x: .07, y: .64, kind: "bed" }, SR: { x: .93, y: .64, kind: "bed" },
   TFL: { x: .33, y: .45, kind: "height" }, TFR: { x: .67, y: .45, kind: "height" },
   LFE: { x: .075, y: .30, kind: "lfe" }
 };
-const GROUPS = [["g-bed", "", ["FL", "FC", "FR", "SL", "SR"]], ["g-height", "", ["TFL", "TFR"]], ["g-lfe", "", ["LFE"]]];
+const GROUPS0 = [["g-bed", "", ["FL", "FC", "FR", "SL", "SR"]], ["g-height", "", ["TFL", "TFR"]], ["g-lfe", "", ["LFE"]]];
+let SPK = SPK0, GROUPS = GROUPS0, SUBN = "LFE";           // the author's 5.1.2 until the level stream describes another layout (docs/layouts.md)
 const LISTENER = { x: .5, y: .72 };
 const NAMES = Object.keys(SPK);
 const lv = {};                                        // per channel: target and displayed levels
-for (const n of NAMES) lv[n] = { tr: -120, tp: -120, db: -120, hold: -120, holdT: 0 };
+function resetLevels() { for (const k of Object.keys(lv)) delete lv[k]; for (const n of NAMES) lv[n] = { tr: -120, tp: -120, db: -120, hold: -120, holdT: 0 }; }
+resetLevels();
 let layout = ["FL", "FR", "TFL", "TFR", "FC", "LFE", "SL", "SR"], lastMsg = 0, chipText = "";
 const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const norm = db => Math.max(0, Math.min(1, (db - FLOOR) / -FLOOR));
 const dbText = db => db <= -90 ? "−∞" : (db < 0 ? "−" : "") + Math.abs(db).toFixed(0);
 
 const meters = document.getElementById("meters"), mel = {};
-for (const [cls, , names] of GROUPS) {
-  const g = el("div", undefined, "grp " + cls);
-  for (const n of names) {
-    const c = el("div", undefined, "ch " + SPK[n].kind), bar = el("div", undefined, "bar"), fill = el("i", undefined, "fill"), pk = el("b", undefined, "peak");
-    bar.setAttribute("role", "meter"); bar.setAttribute("aria-label", n + " level, dBFS"); bar.setAttribute("aria-valuemin", FLOOR); bar.setAttribute("aria-valuemax", 0); bar.setAttribute("aria-valuenow", FLOOR);
-    bar.append(fill, pk); const nm = el("span", n, "nm"), val = el("span", "−∞", "val");
-    c.append(bar, nm, val); g.append(c); mel[n] = { c, fill, pk, val, bar };
+function buildMeters() {
+  meters.replaceChildren(); for (const k of Object.keys(mel)) delete mel[k];
+  for (const [cls, , names] of GROUPS) {
+    const g = el("div", undefined, "grp " + cls);
+    for (const n of names) {
+      const c = el("div", undefined, "ch " + SPK[n].kind), bar = el("div", undefined, "bar"), fill = el("i", undefined, "fill"), pk = el("b", undefined, "peak");
+      bar.setAttribute("role", "meter"); bar.setAttribute("aria-label", n + " level, dBFS"); bar.setAttribute("aria-valuemin", FLOOR); bar.setAttribute("aria-valuemax", 0); bar.setAttribute("aria-valuenow", FLOOR);
+      bar.append(fill, pk); const nm = el("span", n, "nm"), val = el("span", "−∞", "val");
+      c.append(bar, nm, val); g.append(c); mel[n] = { c, fill, pk, val, bar };
+    }
+    meters.append(g);
   }
-  meters.append(g);
+}
+buildMeters();
+/* A layout other than the author's 5.1.2: the level stream sends each speaker's role, azimuth and elevation, and the plan view and meters are rebuilt from that. */
+function applyPlan(ch) {
+  if (!Array.isArray(ch) || !ch.length) return;
+  const same = layout.join() === "FL,FR,TFL,TFR,FC,LFE,SL,SR";
+  if (same) { SPK = SPK0; GROUPS = GROUPS0; SUBN = "LFE"; return; }
+  const spk = {}, bed = [], hgt = [], sub = [];
+  for (const c of ch) {
+    const a = (Number(c.az) || 0) * Math.PI / 180;
+    if (c.role === "sub") { spk[c.name] = { x: .075 + .85 * sub.length, y: .30, kind: "lfe" }; sub.push(c.name); }
+    else if (c.role === "height") { spk[c.name] = { x: .5 + Math.sin(a) * .17, y: .72 - Math.cos(a) * .30, kind: "height" }; hgt.push(c.name); }
+    else { spk[c.name] = { x: .5 + Math.sin(a) * .43, y: .72 - Math.cos(a) * .57, kind: "bed" }; bed.push(c.name); }
+  }
+  for (const k of Object.keys(spk)) { spk[k].x = Math.max(.05, Math.min(.95, spk[k].x)); spk[k].y = Math.max(.1, Math.min(.9, spk[k].y)); }
+  const bySide = names => names.slice().sort((p, q) => spk[p].x - spk[q].x);
+  SPK = spk; SUBN = sub[0] || null; GROUPS = [["g-bed", "", bySide(bed)], ["g-height", "", bySide(hgt)], ["g-lfe", "", sub]].filter(g => g[2].length);
+  NAMES.length = 0; GROUPS.forEach(g => NAMES.push(...g[2])); resetLevels(); buildMeters();
+  document.querySelector(".brand small").textContent = ch.filter(c => c.role === "bed").length + "." + sub.length + "." + hgt.length + " · your layout";
 }
 
 function onLevels(d) {
-  if (d.layout) { layout = d.layout; return; }
+  if (d.layout) { layout = d.layout; applyPlan(d.channels); return; }
   const chip = document.getElementById("lvlchip");
   if (!d.ok) { lastMsg = 0; chipText = "No live levels: " + (d.reason || "CamillaDSP not reachable") + ". The unit needs -p 1234 -a 127.0.0.1."; }
   else {
@@ -420,7 +444,7 @@ function frame(now) {
     document.getElementById("st-loud").textContent = lv[loud].db > -70 ? `${loud} · ${dbText(lv[loud].db)}` : "–";
     let tot = 0, hs = 0; for (const n of dir) { const w = Math.pow(10, lv[n].db / 10); tot += w; if (SPK[n].kind === "height") hs += w; }
     document.getElementById("st-height").textContent = loud && lv[loud].db > -70 && tot > 0 ? Math.round(100 * hs / tot) + " %" : "–";
-    document.getElementById("st-lfe").textContent = lv.LFE.db > -70 ? dbText(lv.LFE.db) + " dB" : "–";
+    document.getElementById("st-lfe").textContent = SUBN && lv[SUBN] && lv[SUBN].db > -70 ? dbText(lv[SUBN].db) + " dB" : "–";
   }
   if (W) drawRoom(now);
   requestAnimationFrame(frame);

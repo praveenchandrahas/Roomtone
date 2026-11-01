@@ -81,6 +81,12 @@ local function lines_for_panel()
     L[#L + 1] = "THEATRE"
     local src = m.source
     L[#L + 1] = "Source:  " .. (src and (src.codec .. " " .. tostring(src.channels) .. "ch -> " .. src.kind .. "  (" .. src.why .. ")") or (m.playing and "not identified" or "-"))
+    local lay = s.layout    -- docs/layouts.md: shown only when it is not the built-in 5.1.2, or when the layout file is broken
+    if type(lay) == "table" and lay.error then
+        L[#L + 1] = "Layout:  file invalid, using 5.1.2 (" .. tostring(lay.error) .. ")"
+    elseif type(lay) == "table" and lay.name and lay.name ~= "5.1.2" then
+        L[#L + 1] = "Layout:  " .. tostring(lay.name) .. (type(lay.channels) == "table" and ("  (" .. #lay.channels .. " speakers)") or "")
+    end
     local path = ({ cam = "through CamillaDSP (EQ active)", direct = "direct, no EQ", mixed = "routing unfinished",
                     ["usb-missing"] = "USB interface not connected" })[m.verdict or ""]
     if path then L[#L + 1] = "Path:    " .. path end
