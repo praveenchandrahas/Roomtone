@@ -1,0 +1,19 @@
+# CI: the full tests, shellcheck, a dry-run build, lintian, and a clean-ubuntu install with a smoke test, remove and purge.
+# The logic lives in scripts of the Software-Defined-Home-Theatre repository (packaging/kit), pinned below to a commit.
+# Green means: it builds, installs, removes cleanly and passes the simulated tests. It does not mean it works on a real rig.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ci:
+    uses: praveenchandrahas/Software-Defined-Home-Theatre/.github/workflows/component-ci.yml@2a7d4b88efd59f6eb49ce8cafc52d2166d3b4959
+    with:
+      kit_ref: 2a7d4b88efd59f6eb49ce8cafc52d2166d3b4959
+      apt_packages: "python3-yaml python3-numpy python3-scipy python3-lupa"

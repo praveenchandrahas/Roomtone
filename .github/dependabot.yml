@@ -1,0 +1,7 @@
+# Keeps the GitHub Actions used by the workflows up to date (pinned to full commit SHAs; Dependabot proposes the new SHA). Nothing is merged automatically.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

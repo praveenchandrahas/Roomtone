@@ -1,0 +1,34 @@
+# Release: runs on a v* tag (or by hand with dry_run). Checks the version, runs ci, builds twice and compares, attests, publishes a PRE-RELEASE
+# (never "latest"), then verifies the published files in a clean ubuntu:24.04. Promoting a pre-release is a manual step (docs/release-process.md
+# in Software-Defined-Home-Theatre). Needs no secrets: only the GITHUB_TOKEN.
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: build and verify everything, publish nothing
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  ci:
+    uses: praveenchandrahas/Software-Defined-Home-Theatre/.github/workflows/component-ci.yml@2a7d4b88efd59f6eb49ce8cafc52d2166d3b4959
+    with:
+      kit_ref: 2a7d4b88efd59f6eb49ce8cafc52d2166d3b4959
+      apt_packages: "python3-yaml python3-numpy python3-scipy python3-lupa"
+  release:
+    needs: ci
+    uses: praveenchandrahas/Software-Defined-Home-Theatre/.github/workflows/component-release.yml@2a7d4b88efd59f6eb49ce8cafc52d2166d3b4959
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    with:
+      kit_ref: 2a7d4b88efd59f6eb49ce8cafc52d2166d3b4959
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
