@@ -18,6 +18,7 @@ from scipy import fft as sfft
 
 from .. import ir as IR
 from .. import profile as PF
+from .. import stimulus as ST
 from ..stimulus import HW_ORDER, RESULT_ORDER
 
 FS = 48000
@@ -64,39 +65,50 @@ class SimRoom:
         # --- geometry derived from the baseline alignment: arrival = distance/343 + profile delay is the same for every speaker ---
         t_far = 10.496e-3
         self.coords = {}
-        for ch, (az, el) in POSE.items():
-            d = (t_far - base["align"][ch]["delay_ms"] * 1e-3) * C
+        L = ST.ACTIVE
+        neutral = L.room_defaults != "author"
+        for i, ch in enumerate(n for n in HW_ORDER if n != ST.SUB):
+            az, el = L.position(ch)
+            if neutral:            # a layout with no measured room: distances vary with the angle and the port (3.0 to 4.0 m) so there is something to align
+                d = 3.0 + 0.6 * (1 - np.cos(np.radians(az))) / 2 + 0.05 * (i % 4)
+            else:
+                d = (t_far - base["align"][ch]["delay_ms"] * 1e-3) * C
             a, e = np.radians(az), np.radians(el)
             self.coords[ch] = np.array([d * np.cos(e) * np.sin(a), d * np.cos(e) * np.cos(a), d * np.sin(e)])
-        self.coords["LFE"] = np.array(SUB_POS, float)
+        if ST.SUB:
+            self.coords[ST.SUB] = np.array(SUB_POS, float)
         # --- gains (dB): raw = what trims were chosen against, so the default profile matches the bed to FL; heights ~0.5 dB over the bed ---
         self.gain_db = {}
-        for ch in ("FL", "FR", "FC", "SL", "SR"):
+        for ch in ST.BED:
             self.gain_db[ch] = BASE_SAT_DB - base["align"][ch]["trim_db"]
-        for ch in ("RL", "RR"):
+        for ch in ST.HEIGHTS:
             self.gain_db[ch] = BASE_SAT_DB + 0.5 - (base["align"][ch]["trim_db"] + base["height_tone"]["trim_db"])
-        self.gain_db["LFE"] = BASE_SAT_DB - base["align"]["LFE"]["trim_db"]
+        if ST.SUB:
+            self.gain_db[ST.SUB] = BASE_SAT_DB - base["align"][ST.SUB]["trim_db"]
+        beds, hts = ST.BED, ST.HEIGHTS
+        self._sc = {"flip": hts[0] if hts else beds[-1], "dead": "SR" if "SR" in beds else beds[-1], "moved": "SL" if "SL" in beds else beds[-1],
+                    "quiet": "FC" if "FC" in beds else beds[0]}      # which speaker each scenario disturbs (the author's names on his layout)
         for ch in self.gain_db:
             self.gain_db[ch] += sensitivity_db                      # overall mic/amp sensitivity (tests move the level ramp with this)
         self.polarity = {ch: 1 for ch in HW_ORDER}
         self.dead = set()
-        self.height_bump = {"RL": [], "RR": []}
+        self.height_bump = {h: [] for h in ST.HEIGHTS}
         self.sub_modes = list(SUB_MODES)
         self.null = SUB_NULL
         self.null_shift = 0.004                              # fractional frequency shift of the null per 20 cm
         # heights voicing (what the default tone filters were fitted against) + an uncorrected error in the default scenario
         self.height_voicing = [("Peaking", 310.0, 7.5, 1.0), ("Peaking", 1700.0, 7.0, 2.5), ("Highshelf", 6000.0, -2.5, 0.8)]
-        self.height_individual = {"RL": [("Peaking", 2800.0, 3.0, 5.0)], "RR": [("Peaking", 3500.0, -3.0, 5.0)]}
+        self.height_individual = {h: ([("Peaking", 2800.0, 3.0, 5.0)], [("Peaking", 3500.0, -3.0, 5.0)])[i % 2] if i < 2 else [] for i, h in enumerate(ST.HEIGHTS)}
         if scenario in ("default", "flipped", "dead", "null", "noisy"):
-            self.coords["SL"] = self._push(self.coords["SL"], 0.45)       # the left surround was moved 45 cm farther away
-            self.gain_db["FC"] -= 2.5                                     # centre is quieter than when the trims were set
+            self.coords[self._sc["moved"]] = self._push(self.coords[self._sc["moved"]], 0.45)       # the left surround was moved 45 cm farther away
+            self.gain_db[self._sc["quiet"]] -= 2.5                                     # centre is quieter than when the trims were set
             self.sub_modes[0] = (52.0, 17.0, 9.0)                         # the 47 Hz mode moved to 52 Hz and got much stronger
-            for h in ("RL", "RR"):
+            for h in ST.HEIGHTS:
                 self.height_bump[h].append(("Peaking", 1000.0, 3.0, 1.5))  # a shared mid bump the default tone does not cover
         if scenario == "flipped":
-            self.polarity["RL"] = -1
+            self.polarity[self._sc["flip"]] = -1
         if scenario == "dead":
-            self.dead.add("SR")
+            self.dead.add(self._sc["dead"])
         if scenario == "null":
             self.null = (68.0, -26.0, 7.0)
             self.null_shift = 0.03
@@ -121,7 +133,7 @@ class SimRoom:
     def physical_delay_ms(self, ch, offset_cm=(0.0, 0.0)):
         """Acoustic delay of the satellite path of `ch` (for LFE: the sub path including the Z906 lag)."""
         d = self.distance_m(ch, offset_cm) / C * 1000
-        return d + (self.sub_lag_ms if ch == "LFE" else 0.0)
+        return d + (self.sub_lag_ms if ch == ST.SUB else 0.0)
 
     def raw_gain_db(self, ch):
         return self.gain_db[ch]
@@ -171,10 +183,10 @@ class SimRoom:
         g = 10 ** (self.gain_db[ch] / 20) * self.polarity[ch]
         imp = np.zeros(n); imp[0] = 1.0
         total = np.zeros(n)
-        if ch != "LFE":
-            hp = HEIGHT_HP_HZ if ch in ("RL", "RR") else SAT_HP_HZ
+        if ch != ST.SUB:
+            hp = HEIGHT_HP_HZ if ch in ST.HEIGHTS else (SAT_HP_HZ if ST.ACTIVE.amp_bass_management else 40.0)     # a layout without an amp that splits bass: full-range beds
             rows = [butter(2, hp, btype="high", fs=FS, output="sos")]
-            if ch in ("RL", "RR"):
+            if ch in ST.HEIGHTS:
                 rows += [PF.biquad_sos(t, f0, gg, q) for t, f0, gg, q in self.height_voicing + self.height_individual[ch] + self.height_bump[ch]]
             rows += [PF.biquad_sos(t, f0, gg, q) for t, f0, gg, q in self._ripple[ch]]
             h = sosfilt(np.vstack(rows), imp)
@@ -182,13 +194,13 @@ class SimRoom:
             direct = self._place(h, td)
             rd, ra = self._reflect[ch]
             total += g * (direct + ra * 0.6 * self._place(h, td + rd) * (-1))   # one floor/wall reflection, 8-12 dB down
-            if ch not in ("RL", "RR"):
+            if ch not in ST.HEIGHTS and (ST.SUB or not ST.ACTIVE.amp_bass_management):     # room modes act on every full-range speaker; with a sub they come in through it
                 sub = sosfilt(self._sub_sos(offset_cm), imp)
-                ts = self.physical_delay_ms("LFE", offset_cm)
+                ts = self.physical_delay_ms(ST.SUB or ch, offset_cm)
                 total += g * 10 ** (SUB_LEVEL_DB / 20) * self._place(sub, ts)
         else:
             sub = sosfilt(self._sub_sos(offset_cm), imp)
-            total += g * 10 ** (SUB_LEVEL_DB / 20) * self._place(sub, self.physical_delay_ms("LFE", offset_cm))
+            total += g * 10 ** (SUB_LEVEL_DB / 20) * self._place(sub, self.physical_delay_ms(ST.SUB, offset_cm))
         self._cache[key] = total
         return total
 
@@ -198,11 +210,11 @@ class SimRoom:
         """Sum over channels of (DAC signal * path impulse response) for the DAC signals y8 (m, 8). Output length m + IR - 1."""
         m = y8.shape[0]
         mic = np.zeros(m + int(IR_LEN_S * FS) - 1)
-        for i, ch in enumerate(HW_ORDER):
-            x = y8[:, i]
+        for ch in HW_ORDER:
+            x = y8[:, ST.COL[ch]]
             if not np.any(x) or ch in self.dead:
                 continue
-            if ch == "LFE" and self.sub_distortion_db is not None:
+            if ch == ST.SUB and self.sub_distortion_db is not None:
                 a = 10 ** (self.sub_distortion_db / 20)
                 x = x + a * (x * x - np.mean(x * x)) / (np.max(np.abs(x)) + 1e-12)   # x^2/peak: a 2nd harmonic of about a*peak/2
             mic += oaconvolve(x, self.impulse_response(ch, offset_cm))

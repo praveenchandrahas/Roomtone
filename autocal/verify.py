@@ -42,7 +42,7 @@ def run_verify(run_dir, backend, prompt=None, out=print):
     target = np.array(res["target_db"]); g = AN.GRID; v = (g >= eqfit.LO_HZ) & (g <= eqfit.HI_HZ)
     alive = meas.alive()
     bass_names = [n for n in PF.BASS_CH if n in alive]
-    timed = [n for n in alive if n != "LFE"]
+    timed = [n for n in alive if n != ST.SUB]
     checks = []
 
     def add(name, value, limit, unit=""):

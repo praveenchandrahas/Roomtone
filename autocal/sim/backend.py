@@ -3,7 +3,7 @@ import copy
 
 import numpy as np
 
-from .. import profile as PF
+from .. import profile as PF, stimulus as ST
 from ..backend import Backend, Capture, BLOCK_S, FS
 from .room import SimRoom, active_windows
 
@@ -53,18 +53,18 @@ class SimBackend(Backend):
 
     # -- audio -------------------------------------------------------------------------------------------------------------------------
     def record_noise(self, seconds, monitor=None):
-        return self.play_record(np.zeros((int(seconds * FS), 8)), monitor, stage="noise", pre_s=0.0, post_s=0.0)
+        return self.play_record(np.zeros((int(seconds * FS), ST.NCH)), monitor, stage="noise", pre_s=0.0, post_s=0.0)
 
     def play_record(self, x8, monitor=None, stage="play", pre_s=1.0, post_s=1.0):
         self.check_cap(x8)
         self.calls += 1
         rng = np.random.default_rng(self.seed * 7919 + self.calls)
         lead = int((pre_s + self.latency_s) * FS)
-        xin = np.concatenate([np.zeros((lead, 8)), x8, np.zeros((int(post_s * FS), 8))])
+        xin = np.concatenate([np.zeros((lead, ST.NCH)), x8, np.zeros((int(post_s * FS), ST.NCH))])
         n = len(xin)
         acoustic = np.zeros(n)
         for a, b in active_windows(xin):                       # only the parts with signal are filtered and convolved
-            seg = np.concatenate([xin[a:b], np.zeros((int(0.3 * FS), 8))])
+            seg = np.concatenate([xin[a:b], np.zeros((int(0.3 * FS), ST.NCH))])
             m = self.room.propagate(PF.apply_profile(self.profile, seg), self.offset_cm)
             k = min(len(m), n - a)
             acoustic[a:a + k] += m[:k]

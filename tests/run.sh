@@ -2,9 +2,11 @@
 # Measurement-kit tests: the drift tracker and the microphone calibration. Needs python3 with numpy and scipy. No hardware, no recordings.
 set -e
 cd "$(dirname "$0")"
+export ROOMTONE_LAYOUT=/nonexistent/layout.yml   # tests never read the real layout file; the ones that need a layout set their own
 python3 test_drift.py
 python3 test_miccal.py
 python3 test_layout_golden.py
+python3 test_layout_sim.py
 for t in test_autocal_ir test_autocal_stimulus test_autocal_eqfit test_autocal_sim test_autocal_analysis test_autocal_cli; do python3 $t.py; done   # the analysis test takes about 2 minutes
 bash -n ../scripts/rec.sh ../scripts/autocal ../scripts/tone-test.sh ../tools/bartest/play-bar.sh ../tools/bartest/probe-hdmi.sh ../tools/subtest/phone-to-wav.sh && echo "PASS shell syntax"
 python3 test_autocal_web.py

@@ -19,11 +19,14 @@ import sys
 import numpy as np
 from scipy.signal import sosfilt, sosfreqz, butter
 
+from . import layout as LAY, stimulus as _ST
 from .stimulus import HW_ORDER, RESULT_ORDER
 
 FS = 48000
-BASS_CH = ["FL", "FR", "FC", "LFE", "SL", "SR"]       # set-eq CHANNELS = [0,1,4,5,6,7]
-HEIGHTS_HP_HZ = 140.0                                 # set-eq --heights default; heights' bass goes (low-passed) to the LFE
+BASS_CH = ["FL", "FR", "FC", "LFE", "SL", "SR"]       # speakers with the shared bass EQ (set-eq CHANNELS = [0,1,4,5,6,7]); rewritten in place by activate()
+BASS_SUB = ["RL", "RR"]                               # speakers whose bass goes (high-passed) to the sub: bass: sub in the layout
+HEIGHT_NAMES = ["RL", "RR"]                           # height speakers (tone-match and trim)
+HEIGHTS_HP_HZ = 140.0                                 # set-eq --heights default; the bass-to-sub speakers' bass goes (low-passed) to the sub
 LIVE_ROOM_DEFAULT = "~/.config/camilladsp/room.json"
 
 DEFAULT_ROOM = {
@@ -39,7 +42,7 @@ DEFAULT_ROOM = {
 
 _PUNCH20X = [("q20_1", 47.06, -10.26, 5.0), ("q20_2", 60.66, -2.51, 5.0), ("q20_3", 85.3, -4.87, 5.0), ("q20_4", 107.09, -4.06, 5.0),
              ("q20_5", 142.27, -1.82, 5.0), ("q20_6", 154.88, -5.44, 4.99), ("q20_7", 176.64, -3.97, 5.0), ("q20_8", 250.37, -5.01, 5.0)]
-BASE_SETS = {"punch20x": _PUNCH20X,
+BASE_SETS = {"flat": [], "punch20x": _PUNCH20X,
              "drone2": _PUNCH20X + [("d2_1", 72.0, -6.0, 8.0), ("d2_2", 84.0, -6.0, 4.0)]}
 
 
@@ -47,8 +50,29 @@ class RoomError(ValueError):
     pass
 
 
+def room_for(layout):
+    """The starting room of a layout: the author's numbers by channel name when room_defaults is author, otherwise all zero (no bass or tone filters)."""
+    if layout.room_defaults == "author":
+        zero = {"delay_ms": 0.0, "trim_db": 0.0}
+        r = copy.deepcopy(DEFAULT_ROOM)
+        r["align"] = {n: copy.deepcopy(DEFAULT_ROOM["align"].get(n, zero)) for n in layout.result_order}
+        return r
+    return {"version": 1, "align": {n: {"delay_ms": 0.0, "trim_db": 0.0} for n in layout.result_order},
+            "height_tone": {"filters": [], "trim_db": 0.0}, "bass": {"base_set": "flat", "extra_filters": []}}
+
+
+def activate(layout):
+    """Called by stimulus.activate: bass channels, bass-to-sub channels, heights and the crossover come from the layout (in place)."""
+    global HEIGHTS_HP_HZ
+    BASS_CH[:] = layout.bass_eq_channels
+    BASS_SUB[:] = layout.bass_to_sub
+    HEIGHT_NAMES[:] = layout.heights
+    HEIGHTS_HP_HZ = float(layout.crossover_hz)
+
+
 def default_room():
-    return copy.deepcopy(DEFAULT_ROOM)
+    """The starting room of the active layout (the author's own numbers on his 5.1.2)."""
+    return room_for(_ST.ACTIVE) if _ST.ACTIVE is not None else copy.deepcopy(DEFAULT_ROOM)
 
 
 def validate_room(room):
@@ -129,7 +153,7 @@ def set_eq_filter_sets():
 def bass_filters(room):
     """All bass filters now live on the Z906 channels: base set + extras, as dicts {name, freq, gain, q}."""
     b = room["bass"]
-    base = [dict(name=n, freq=f, gain=g, q=q) for n, f, g, q in BASE_SETS[b.get("base_set", "drone2")]]
+    base = [dict(name=n, freq=f, gain=g, q=q) for n, f, g, q in BASE_SETS[b.get("base_set", "drone2" if _ST.ACTIVE is None or _ST.ACTIVE.room_defaults == "author" else "flat")]]
     return base + [dict(f) for f in b.get("extra_filters", [])]
 
 
@@ -191,9 +215,9 @@ def response(room, ch, f, parts=("bass", "tone", "hp", "trim", "delay")):
         fl = bass_filters(room)
         if fl:
             h = h * np.prod([sos_response(biquad_sos("Peaking", p["freq"], p["gain"], p["q"]), f) for p in fl], axis=0)
-    if ch in ("RL", "RR"):
-        if "hp" in parts:
-            h = h * sos_response(lr4_sos(HEIGHTS_HP_HZ, True), f)
+    if ch in BASS_SUB and "hp" in parts:
+        h = h * sos_response(lr4_sos(HEIGHTS_HP_HZ, True), f)
+    if ch in HEIGHT_NAMES:
         if "tone" in parts and len(tone_sos(room)):
             h = h * sos_response(tone_sos(room), f)
         if "trim" in parts:
@@ -206,21 +230,28 @@ def response(room, ch, f, parts=("bass", "tone", "hp", "trim", "delay")):
 
 
 def apply_profile(room, x, fs=FS):
-    """Time-domain model of the CamillaDSP profile for the simulator. x: (n, 8) in hardware order. Returns an array of the same shape.
+    """Time-domain model of the CamillaDSP profile for the simulator. x: (n, ports) in port order. Returns an array of the same shape.
 
-    Order as in set-eq.py build_config: heights stage (high-pass, tone, trim; the summed heights low-passed and added to LFE),
-    bass filters on FL FR FC LFE SL SR, then per-channel delay and trim."""
-    idx = {n: i for i, n in enumerate(HW_ORDER)}
+    Order as in set-eq.py build_config: heights stage (the bass-to-sub speakers high-passed and their sum low-passed and added to the sub; height speakers
+    tone-matched and trimmed), bass filters on the bass channels, then per-channel delay and trim."""
+    idx = dict(_ST.COL)
     n = x.shape[0]; y = x.astype(np.float64).copy()
-    if np.any(x[:, idx["RL"]]) or np.any(x[:, idx["RR"]]):
-        bus = sosfilt(lr4_sos(HEIGHTS_HP_HZ, False), x[:, idx["RL"]] + x[:, idx["RR"]])
-        for h in ("RL", "RR"):
-            v = sosfilt(lr4_sos(HEIGHTS_HP_HZ, True), x[:, idx[h]])
-            ts = tone_sos(room)
-            if len(ts):
-                v = sosfilt(ts, v)
-            y[:, idx[h]] = v * 10 ** (room["height_tone"]["trim_db"] / 20)
-        y[:, idx["LFE"]] += bus
+    active = [c for c in dict.fromkeys(BASS_SUB + HEIGHT_NAMES) if np.any(x[:, idx[c]])]
+    if active:
+        if BASS_SUB and _ST.SUB:
+            bus = sosfilt(lr4_sos(HEIGHTS_HP_HZ, False), sum(x[:, idx[c]] for c in BASS_SUB))
+        for h in active:
+            v = x[:, idx[h]]
+            if h in BASS_SUB:
+                v = sosfilt(lr4_sos(HEIGHTS_HP_HZ, True), v)
+            if h in HEIGHT_NAMES:
+                ts = tone_sos(room)
+                if len(ts):
+                    v = sosfilt(ts, v)
+                v = v * 10 ** (room["height_tone"]["trim_db"] / 20)
+            y[:, idx[h]] = v
+        if BASS_SUB and _ST.SUB:
+            y[:, idx[_ST.SUB]] += bus
     fl = bass_filters(room)
     if fl:
         sos = np.vstack([biquad_sos("Peaking", p["freq"], p["gain"], p["q"]) for p in fl])
@@ -247,3 +278,6 @@ def merge_filters(old, new, tol_oct=0.03, max_cut=-15.0):
         else:
             out.append(dict(nf))
     return [f for f in out if abs(f["gain"]) >= 0.05]
+
+
+activate(_ST.ACTIVE or LAY.default_layout())

@@ -6,7 +6,18 @@ import os
 import numpy as np
 
 from .analysis import GRID
+from . import stimulus as ST
 from .stimulus import RESULT_ORDER
+
+RESULTS_VERSION = 2          # 2: adds the `layout` field (docs/layouts.md). Version-1 files (before layouts) are still read and mean the author's 5.1.2.
+AUTHOR_CHANNELS = ["FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR"]
+
+
+def layout_record(layout=None):
+    """The layout block stored in results.json and run.json: enough to draw the plan view and to read the table without the layout file."""
+    L = layout or ST.ACTIVE
+    return {"name": L.name, "preset": L.preset, "amp_bass_management": L.amp_bass_management, "room_defaults": L.room_defaults, "ports": L.n,
+            "channels": [dict(c) for c in L.channels]}
 
 POSITION_LABELS = [("centre", (0.0, 0.0), 2.0), ("left 20 cm", (-20.0, 0.0), 1.0), ("right 20 cm", (20.0, 0.0), 1.0),
                    ("fore 20 cm", (0.0, 20.0), 1.0), ("aft 20 cm", (0.0, -20.0), 1.0)]
@@ -47,7 +58,7 @@ def build_results(run_id, created, mode, simulated, target_name, hump_db, meas, 
     positions = [{"index": p.index, "label": p.label, "offset_cm": [p.offset_cm[0], p.offset_cm[1]]} for p in meas.pos]
     resp = {n: {k: _r(v) for k, v in d.items()} for n, d in prop["response"].items()}
     b = prop["bass"]
-    res = {"version": 1, "id": run_id, "created": created, "mode": mode, "simulated": simulated,
+    res = {"version": RESULTS_VERSION, "layout": layout_record(), "id": run_id, "created": created, "mode": mode, "simulated": simulated,
            "target": {"name": target_name, "hump_db": hump_db}, "channels": list(RESULT_ORDER), "freq": _r(GRID, 2), "positions": positions,
            "response_db": resp, "target_db": _r(prop["target"]), "predicted_after_db": {n: _r(v) for n, v in prop["predicted"].items()},
            "table": prop["table"],
@@ -78,7 +89,7 @@ def _filt(f):
 NUM = {"type": "number"}
 NUMN = {"type": ["number", "null"]}
 STR = {"type": "string"}
-CH = {"type": "string", "enum": list(RESULT_ORDER)}
+CH = {"type": "string", "enum": RESULT_ORDER}      # the live list: it follows the active layout (check_results compares against the file's own layout)
 FILTER = {"type": "object", "required": ["name", "freq", "gain", "q"], "properties": {"name": STR, "freq": NUM, "gain": NUM, "q": NUM, "type": STR}}
 CURVE = {"type": "array", "items": NUM}
 
@@ -87,17 +98,17 @@ RESULTS_SCHEMA = {
     "required": ["version", "id", "created", "mode", "simulated", "target", "channels", "freq", "positions", "response_db", "target_db",
                  "predicted_after_db", "table", "bass", "heights", "ir", "arrival_scatter", "warnings", "verdict", "summary", "commands", "verify"],
     "properties": {
-        "version": {"enum": [1]}, "id": {"type": "string", "pattern": r"^[0-9]{8}-[0-9]{6}$"}, "created": STR, "mode": {"enum": ["single", "five", "seats"]},
+        "version": {"enum": [1, 2]}, "layout": {"type": "object", "required": ["name", "channels"]}, "id": {"type": "string", "pattern": r"^[0-9]{8}-[0-9]{6}$"}, "created": STR, "mode": {"enum": ["single", "five", "seats"]},
         "simulated": {"type": "boolean"},
         "target": {"type": "object", "required": ["name", "hump_db"], "properties": {"name": STR, "hump_db": NUM}},
-        "channels": {"type": "array", "items": CH, "minItems": 8, "maxItems": 8},
+        "channels": {"type": "array", "items": CH, "minItems": 1},
         "freq": CURVE,
         "positions": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["index", "label", "offset_cm"],
                       "properties": {"index": {"type": "integer"}, "label": STR, "offset_cm": {"type": "array", "items": NUM, "minItems": 2, "maxItems": 2}}}},
         "response_db": {"type": "object", "additionalProperties": {"type": "object", "required": ["avg"], "additionalProperties": CURVE}},
         "target_db": CURVE,
         "predicted_after_db": {"type": "object", "additionalProperties": CURVE},
-        "table": {"type": "array", "minItems": 8, "maxItems": 8, "items": {"type": "object", "required": [
+        "table": {"type": "array", "minItems": 1, "items": {"type": "object", "required": [
             "channel", "arrival_ms", "delay_now_ms", "delay_new_ms", "level_db", "trim_now_db", "trim_new_db", "polarity", "snr_db", "notes"],
             "properties": {"channel": CH, "arrival_ms": NUMN, "delay_now_ms": NUM, "delay_new_ms": NUM, "level_db": NUMN, "trim_now_db": NUM,
                            "trim_new_db": NUM, "snr_db": NUMN, "notes": {"type": "array", "items": STR},
@@ -134,7 +145,7 @@ RUN_SCHEMA = {
     "type": "object", "required": ["id", "created", "mode", "simulated", "target", "room_before", "version"],
     "properties": {"id": {"type": "string", "pattern": r"^[0-9]{8}-[0-9]{6}$"}, "created": STR, "mode": {"enum": ["single", "five", "seats"]},
                    "simulated": {"type": "boolean"}, "target": {"type": "object", "required": ["name", "hump_db"], "properties": {"name": STR, "hump_db": NUM}},
-                   "room_before": {"type": "object", "required": ["version", "align", "height_tone", "bass"]}, "version": {"enum": [1]}}}
+                   "room_before": {"type": "object", "required": ["version", "align", "height_tone", "bass"]}, "version": {"enum": [1, 2]}, "layout": {"type": "object"}}}
 
 
 def validate(obj, schema, path="$"):
@@ -183,8 +194,16 @@ def validate(obj, schema, path="$"):
 
 
 def check_results(res):
-    """Contract checks beyond the schema: equal lengths, 8 distinct channels, ir <= 2000 points."""
-    errs = validate(res, RESULTS_SCHEMA)
+    """Contract checks beyond the schema: equal lengths, each channel of the layout once, ir <= 2000 points."""
+    names = [c["name"] for c in res["layout"]["channels"]] if isinstance(res.get("layout"), dict) and res["layout"].get("channels") else AUTHOR_CHANNELS
+    saved = list(RESULT_ORDER)
+    RESULT_ORDER[:] = names                          # validate this file against ITS layout (version 1 files: the author's 5.1.2)
+    try:
+        errs = validate(res, RESULTS_SCHEMA)
+    finally:
+        RESULT_ORDER[:] = saved
+    if res.get("version") == 2 and not isinstance(res.get("layout"), dict):
+        errs.append("version 2 needs a layout field")
     n = len(res.get("freq", []))
     for k, d in res.get("response_db", {}).items():
         for kk, v in d.items():
@@ -195,8 +214,8 @@ def check_results(res):
             errs.append(f"predicted_after_db.{k}: length {len(v)} != freq {n}")
     if len(res.get("target_db", [])) != n:
         errs.append("target_db length != freq")
-    if sorted(r.get("channel") for r in res.get("table", [])) != sorted(RESULT_ORDER):
-        errs.append("table must hold the 8 channels once each")
+    if sorted(r.get("channel") for r in res.get("table", [])) != sorted(names):
+        errs.append(f"table must hold the {len(names)} channels of the layout once each")
     for k, v in res.get("ir", {}).items():
         if len(v["t_ms"]) > 2000 or len(v["t_ms"]) != len(v["h"]):
             errs.append(f"ir.{k}: more than 2000 points or mismatched lengths")

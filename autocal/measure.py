@@ -8,6 +8,7 @@ import numpy as np
 from scipy.signal import fftconvolve
 
 from . import ir as IR
+from . import stimulus as ST
 from .stimulus import HW_ORDER, sweep_at_level, chirp
 
 FS = IR.FS
@@ -61,7 +62,7 @@ class PositionData:
 
 
 def _arr_band(name):
-    return (40, 120) if name == "LFE" else (300, 4000)
+    return (40, 120) if name == ST.SUB else (300, 4000)
 
 
 def _pilot_offset_ms(x, a, b, slot):
@@ -116,8 +117,8 @@ def analyse_recording(x_raw, cues, index=1, label="centre", offset_cm=(0.0, 0.0)
         t_arr, _ = IR.arrival(h, pre, lo, hi)
         f, H = IR.spectrum(h, pre, t_arr)
         cm = ChannelMeasure(name, t_arr_ms=t_arr, f=f, H=H)
-        cm.snr_db = IR.band_snr_db(h, pre, t_arr, 30, 120) if name == "LFE" else IR.band_snr_db(h, pre, t_arr, 300, 4000)
-        if name in ("RL", "RR"):
+        cm.snr_db = IR.band_snr_db(h, pre, t_arr, 30, 120) if name == ST.SUB else IR.band_snr_db(h, pre, t_arr, 300, 4000)
+        if name in ST.HEIGHTS:
             cm.snr40_db = None
         else:
             cm.snr40_db = cm.snr40_slot_db = IR.band_snr_db(h, pre, t_arr, 35, 45)
@@ -126,18 +127,19 @@ def analyse_recording(x_raw, cues, index=1, label="centre", offset_cm=(0.0, 0.0)
                 if pn is not None:
                     cm.snr40_db = IR.band_snr_db(h, pre, t_arr, 35, 45, noise_pow=pn)
         cm.dead = cm.snr_db < DEAD_SNR_DB
-        cm.level_db = IR.band_level_db(f, H, 40, 100) if name == "LFE" else IR.band_level_db(f, H, 500, 2000)
+        cm.level_db = IR.band_level_db(f, H, 40, 100) if name == ST.SUB else IR.band_level_db(f, H, 500, 2000)
         cm.level_mid_db = IR.band_level_db(f, H, 300, 4000)
         cm.ir_t_ms, cm.ir_h = downsample_ir(h, pre)
-        if name != "LFE" and not cm.dead:
+        if name != ST.SUB and not cm.dead:
             po = _pilot_offset_ms(x, a, b, sl)
             cm.pilot_dev_ms = po
         raw.setdefault(name, []).append(cm)
-    if "FL" not in raw:
-        raise MeasurementError("FL sweep (the timing reference) is not in this recording")
+    REF = ST.REF
+    if REF not in raw:
+        raise MeasurementError(f"{REF} sweep (the timing reference) is not in this recording")
     first = {n: v[0] for n, v in raw.items()}
-    ref = first["FL"].t_arr_ms
-    pil_ref = first["FL"].pilot_dev_ms
+    ref = first[REF].t_arr_ms
+    pil_ref = first[REF].pilot_dev_ms
     for n, cm in first.items():
         cm.arrival_ms = cm.t_arr_ms - ref
         if cm.pilot_dev_ms is not None and pil_ref is not None:
@@ -149,8 +151,8 @@ def analyse_recording(x_raw, cues, index=1, label="centre", offset_cm=(0.0, 0.0)
         if cm.dead:
             cm.notes.append("no usable signal: channel silent, disconnected or muted")
     pos.ch = first
-    if len(raw["FL"]) > 1:
-        a1, a2 = raw["FL"][0], raw["FL"][1]
+    if len(raw[REF]) > 1:
+        a1, a2 = raw[REF][0], raw[REF][1]
         m = (a1.f >= 40) & (a1.f <= 8000)
         cent = np.geomspace(40, 8000, 40)
         d = IR.thirds(a1.f, a1.H, cent) - IR.thirds(a2.f, a2.H, cent)
@@ -165,7 +167,7 @@ def analyse_channel_id(x_raw, id_cues, pre_s=0.3, ratio_min=10.0):
     from .stimulus import chirp as _chirp
     x = np.asarray(x_raw, float); out = {}
     for name, t in zip(id_cues["names"], id_cues["times"]):
-        c = _chirp(ms=150, f0=40.0, f1=120.0) if name == "LFE" else _chirp()
+        c = _chirp(ms=150, f0=40.0, f1=120.0) if name == ST.SUB else _chirp()
         r = np.abs(fftconvolve(x, c[::-1], mode="valid"))
         lo = max(0, int((t + pre_s - 0.05) * FS)); hi = min(len(r), int((t + pre_s + 0.45) * FS))
         pk = float(np.max(r[lo:hi])) if hi > lo else 0.0

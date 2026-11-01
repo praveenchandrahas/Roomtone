@@ -6,7 +6,7 @@ import os
 import sys
 
 from . import install, profile as PF, results as RS, runner as RN, safety as SF
-from . import stimulus as ST
+from . import layout as LAY, stimulus as ST
 from .stimulus import LevelCapError
 
 
@@ -192,6 +192,7 @@ def cmd_verify(a):
 
 def parser():
     p = argparse.ArgumentParser(prog="autocal", description="Automated room calibration for the SDHT rig. Never applies anything by itself.")
+    p.add_argument("--layout", metavar="FILE", help="speaker layout file (default $ROOMTONE_LAYOUT or ~/.config/roomtone/layout.yml; none = the built-in 5.1.2). See docs/layouts.md")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def common(s):
@@ -217,7 +218,8 @@ def parser():
         s.add_argument("--speed", type=float, default=0.0, help="simulation only: virtual seconds per real second (0 = as fast as possible)")
         s.add_argument("--sweep-s", type=float, default=7.0)
         s.add_argument("--tail-s", type=float, default=2.0)
-        s.add_argument("--target", default="owner_hump", choices=["owner_hump", "house", "flat"])
+        s.add_argument("--target", default=None, choices=["owner_hump", "house", "flat"],
+                       help="bass target (default: owner_hump on the author's layout, house - a gentle rise below 100 Hz - on any other)")
         s.add_argument("--hump-db", type=float, default=20.0)
         s.add_argument("--allow-boost", action="store_true", help="allow up to +3 dB boosts (Q <= 2); off by default (cut-only)")
         s.add_argument("--sim-noise", type=float, default=-74.0, help=argparse.SUPPRESS)
@@ -241,11 +243,21 @@ def parser():
 
 def main(argv=None):
     a = parser().parse_args(argv)
+    try:
+        lay = LAY.load(a.layout, strict=a.layout is not None)
+    except LAY.LayoutError as e:
+        print(f"layout error: {e}", file=sys.stderr)
+        return 2
+    ST.activate(lay)
+    if a.layout:
+        os.environ[LAY.ENV_PATH] = os.path.abspath(a.layout)        # set-eq.py and the router, started from here, must read the same file
+    if getattr(a, "target", "x") is None:
+        a.target = "owner_hump" if lay.room_defaults == "author" else "house"
     lo = getattr(a, "lfe_from", None)
-    if lo is not None:
+    if lo is not None and ST.SUB:
         if not 25.0 <= lo <= 60.0:
             print("--lfe-from must be between 25 and 60 Hz"); return 2
-        ST.BANDS["LFE"] = (float(lo), ST.BANDS["LFE"][1])
+        ST.BANDS[ST.SUB] = (float(lo), ST.BANDS[ST.SUB][1])
     try:
         if a.cmd == "run":
             return cmd_run(a)

@@ -102,7 +102,7 @@ class Run:
         room = self.be.current_room()
         self.room = PF.validate_room(room)
         run = {"id": self.id, "created": self.created, "mode": self.cfg.mode, "simulated": self.be.simulated,
-               "target": {"name": self.cfg.target, "hump_db": self.cfg.hump_db}, "room_before": self.room, "version": 1}
+               "target": {"name": self.cfg.target, "hump_db": self.cfg.hump_db}, "room_before": self.room, "version": RS.RESULTS_VERSION, "layout": RS.layout_record()}
         RS.write_json(os.path.join(self.dir, "run.json"), run)
         self.st("idle", "start", "starting", 0.0)
 
@@ -144,7 +144,7 @@ class Run:
         for lv in ST.ramp_levels():
             self.check_abort()
             burst = ST.pink_burst(lv)
-            x = np.zeros((int(1.6 * FS), 8)); x[int(0.3 * FS):int(0.3 * FS) + len(burst), 0] = burst
+            x = np.zeros((int(1.6 * FS), ST.NCH)); x[int(0.3 * FS):int(0.3 * FS) + len(burst), ST.COL[ST.REF]] = burst
             self.st("ramp", "level ramp", f"FL burst at {lv:.0f} dBFS", level_dbfs=lv)
             cap = self.play(x, "ramp", self.monitor(), pre_s=0.3, post_s=0.3)
             rep = ST.burst_report(cap.x, burst, self.floor, noise=self.noise_x)
@@ -196,10 +196,10 @@ class Run:
         self.details["channel_id"] = ident
         dead = [n for n, v in ident.items() if not v["alive"]]
         self.dead_id = dead
-        if "FL" in dead or len(dead) >= 4:
-            raise RunAborted("channel ID: " + ("FL is silent" if "FL" in dead else f"{len(dead)} of 8 speakers are silent") +
+        if ST.REF in dead or len(dead) * 2 >= len(ST.HW_ORDER):
+            raise RunAborted("channel ID: " + (f"{ST.REF} is silent" if ST.REF in dead else f"{len(dead)} of {len(ST.HW_ORDER)} speakers are silent") +
                              ": wrong microphone, muted amp, or cabling. Nothing measured.", "error")
-        self.say("channel ID: " + ("all 8 speakers answer" if not dead else "SILENT: " + ", ".join(dead)))
+        self.say("channel ID: " + (f"all {len(ST.HW_ORDER)} speakers answer" if not dead else "SILENT: " + ", ".join(dead)))
 
     def wait_prompt(self, pid, text, step, prog):
         """Shows a prompt (status.json + terminal + beep) and waits for control/continue-<id>, Enter on a terminal, or abort."""
@@ -242,7 +242,7 @@ class Run:
             tl = ST.Timeline(sweep_s=self.cfg.sweep_s, tail_s=self.cfg.tail_s, level_db=self.sweep_level)
             sweeps = []
             for sl in tl.cues["slots"]:
-                if sl["name"] == "LFE":
+                if sl["name"] == ST.SUB:
                     sweeps.append({"t0": 1.0 + sl["t"], "T": self.cfg.sweep_s, "f0": sl["f0"], "f1": sl["f1"]})
             before = self.noise_reference(k, "before", base)
             self.st("sweeping", f"position {k + 1}/{total}: {label}", "playing sync chirps and sweeps", base, position=k + 1, level_dbfs=self.sweep_level)
@@ -271,9 +271,9 @@ class Run:
                 raise RunAborted(f"position {k + 1}: {e}", "error")
             if not self.cfg.dry and not self.be.simulated:
                 IR.write_wav24(os.path.join(self.dir, "raw", f"pos{k + 1}.wav"), cap.x)
-            lfe = pd.ch.get("LFE")
+            lfe = pd.ch.get(ST.SUB)
             if lfe is not None and lfe.snr40_db is not None and not lfe.dead and lfe.snr40_db < M.SNR_ABORT_LFE_40HZ_DB:
-                raise RunAborted(f"SNR at 40 Hz for the sub (LFE) is {lfe.snr40_db:.0f} dB, below {M.SNR_ABORT_LFE_40HZ_DB:.0f} dB"
+                raise RunAborted(f"SNR at 40 Hz for the sub ({ST.SUB}) is {lfe.snr40_db:.0f} dB, below {M.SNR_ABORT_LFE_40HZ_DB:.0f} dB"
                                  + (f" (against the sweep's own IR it would be {lfe.snr40_slot_db:.0f} dB; the 20 s silent recordings are saved in raw/)" if lfe.snr40_slot_db is not None and abs(lfe.snr40_slot_db - lfe.snr40_db) >= 3 else "")
                                  + ": too quiet or too noisy for a trustworthy bass fit", "error")
             bass = [n for n in PF.BASS_CH if n in pd.ch and not pd.ch[n].dead and pd.ch[n].snr40_db is not None]

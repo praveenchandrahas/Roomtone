@@ -103,6 +103,12 @@ for key in sorted(gold):
         else:
             check("config.proposed.yml for the simulated run is byte-identical to the one made before the layout work", snap[key] == gold[key])
         continue
-    d = same(snap.get(key), gold[key], key)
+    a, b = snap.get(key), gold[key]
+    if key == "results":      # the one deliberate change: version 1 -> 2 and the new layout field (docs/layouts.md); everything else must be as before
+        check("results.json: version is 2 and the layout field says 5.1.2 with its 8 speakers", a.get("version") == 2 and a["layout"]["name"] == "5.1.2" and len(a["layout"]["channels"]) == 8
+              and b.get("version") == 1 and "layout" not in b)
+        a = {k: v for k, v in a.items() if k not in ("version", "layout")}
+        b = {k: v for k, v in b.items() if k not in ("version", "layout")}
+    d = same(a, b, key)
     check(f"golden {key} unchanged for the 5.1.2 layout", not d, d)
 finish("layout golden (author 5.1.2)")

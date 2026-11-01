@@ -489,6 +489,13 @@ def main(argv=None):
     ap.add_argument("--bind", default=None, help="address to bind (default 127.0.0.1). Anything else exposes the GUI to the network; there is no login.")
     ap.add_argument("--mock", action="store_true", help="development: seed fake runs and use the mock run/apply back end instead of autocal")
     a = ap.parse_args(argv)
+    if not a.mock:
+        from .. import layout as LAY, stimulus as ST
+        try:
+            ST.activate(LAY.load())
+        except LAY.LayoutError as e:
+            sys.stderr.write("layout error: %s\n" % e)
+            return 2
     bind = a.bind or "127.0.0.1"
     if a.bind and a.bind not in ("127.0.0.1", "localhost", "::1"):
         sys.stderr.write("WARNING: binding to %s. The GUI has no login and can apply a room correction. Only do this on a network you trust.\n" % a.bind)

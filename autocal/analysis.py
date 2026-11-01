@@ -129,7 +129,8 @@ def propose(meas, room, opts=None, previous=None):
     alive = meas.alive(); warnings = []
     dead = [n for n in RESULT_ORDER if n not in alive]
     A = room["align"]
-    timed = [n for n in RESULT_ORDER if n in alive and n != "LFE"]
+    SUB = ST.SUB
+    timed = [n for n in RESULT_ORDER if n in alive and n != SUB]
     arr_pp = {n: [p.ch[n].arrival_ms for p in meas.pos if n in p.ch and not p.ch[n].dead] for n in RESULT_ORDER}
     arr_mean = {n: meas.wvals(n, "arrival_ms") for n in alive}
 
@@ -137,8 +138,8 @@ def propose(meas, room, opts=None, previous=None):
     T = max(arr_mean[n] for n in timed)
     resid = {n: (T - arr_mean[n]) for n in timed}
     # the LFE is not measured reliably in time (Z906 lag): it tracks FL, as ALIGN does, so the bed-to-sub relation is kept
-    track = "FL" if "FL" in resid else (timed[0] if timed else None)
-    for n in ["LFE"] + dead:                      # LFE and dead channels cannot be timed: they follow FL's change so their relation to the group is kept
+    track = ST.REF if ST.REF in resid else (timed[0] if timed else None)
+    for n in ([SUB] if SUB else []) + dead:                      # LFE and dead channels cannot be timed: they follow FL's change so their relation to the group is kept
         resid[n] = resid.get(track, 0.0) if track else 0.0
     raw_new = {n: A[n]["delay_ms"] + resid.get(n, 0.0) for n in RESULT_ORDER}
     shift = min(raw_new.values())
@@ -156,10 +157,10 @@ def propose(meas, room, opts=None, previous=None):
         for n in bed:
             trim_new[n] = round(min(0.0, _hyst(A[n]["trim_db"], t_l - raw_lvl[n], TRIM_HYST_DB)), 2)
     hs = [n for n in HEIGHTS if n in alive]
-    if len(hs) == 2:
+    if len(hs) >= 2:
         lm = {n: meas.wvals(n, "level_mid_db") for n in hs}
-        d = lm["RL"] - lm["RR"]
-        dl = {"RL": min(0.0, -d), "RR": min(0.0, d)}
+        quiet = min(lm.values())
+        dl = {n: min(0.0, quiet - lm[n]) for n in hs}          # the louder height speakers come down to the quietest (nothing is boosted)
         for n in hs:
             trim_new[n] = round(_hyst(A[n]["trim_db"], A[n]["trim_db"] + dl[n], TRIM_HYST_DB), 2)
     dtrim = {n: trim_new[n] - A[n]["trim_db"] for n in RESULT_ORDER}
@@ -169,7 +170,7 @@ def propose(meas, room, opts=None, previous=None):
     judged = [n for n in timed]
     need = max(1, int(np.ceil(0.6 * P)))
     for n in RESULT_ORDER:
-        if n == "LFE" or n not in alive or len(judged) < 3:
+        if n == SUB or n not in alive or len(judged) < 3:
             pol[n] = {"ok": True, "flip_proposed": False, "margin_db": None}
             continue
         others = [o for o in judged if o != n]
@@ -187,7 +188,7 @@ def propose(meas, room, opts=None, previous=None):
         bass_names = [n for n in bass_names if n not in weak]
         warnings.append(f"left out of the bass-fit average (SNR at 40 Hz under {M.SNR_FIT_MIN_40HZ_DB:.0f} dB): " + ", ".join(weak))
     bass_curves = [pmean_db([meas.curve(n, pi, 1 / 6) for n in bass_names]) for pi in range(P)]
-    bopts = opts.bass or eqfit.FitOptions(max_boost_db=3.0 if opts.allow_boost else 0.0, lo_hz=max(eqfit.LO_HZ, ST.BANDS['LFE'][0]))
+    bopts = opts.bass or eqfit.FitOptions(max_boost_db=3.0 if opts.allow_boost else 0.0, lo_hz=max(eqfit.LO_HZ, ST.BANDS[SUB][0] if SUB else 25.0))
     fit = eqfit.fit_guarded(GRID, bass_curves, w, target, bopts)
     extra_old = room["bass"].get("extra_filters", [])
     extra_new = PF.merge_filters(extra_old, fit["filters"])
@@ -196,15 +197,17 @@ def propose(meas, room, opts=None, previous=None):
 
     # ---- heights ------------------------------------------------------------------------------------------------------------------
     hres = None
-    if len(hs) == 2 and len(bed) >= 2:
+    if len(HEIGHTS) == 2 and len(hs) == 2 and len(bed) >= 2:
         bed_c = np.array([pmean_db([meas.curve_at(n, pi, HT.CENTRES, 1 / 3) for n in bed]) for pi in range(P)])
-        rl_c = np.array([meas.curve_at("RL", pi, HT.CENTRES, 1 / 3) for pi in range(P)])
-        rr_c = np.array([meas.curve_at("RR", pi, HT.CENTRES, 1 / 3) for pi in range(P)])
+        rl_c = np.array([meas.curve_at(hs[0], pi, HT.CENTRES, 1 / 3) for pi in range(P)])
+        rr_c = np.array([meas.curve_at(hs[1], pi, HT.CENTRES, 1 / 3) for pi in range(P)])
         hopts = opts.heights or HT.HeightOptions(allow_boost=opts.allow_boost)
-        hres = HT.fit_heights(HT.CENTRES, bed_c, rl_c, rr_c, w, room, hopts, extra_shift_db=(dtrim["RL"] + dtrim["RR"]) / 2)
+        hres = HT.fit_heights(HT.CENTRES, bed_c, rl_c, rr_c, w, room, hopts, extra_shift_db=(dtrim[hs[0]] + dtrim[hs[1]]) / 2)
         warnings += hres["notes"]
-    else:
+    elif len(HEIGHTS) == 2:
         warnings.append("heights tone not fitted (a height channel or too few bed speakers are silent)")
+    elif HEIGHTS:
+        warnings.append(f"height tone not fitted: the tone match works on exactly two height speakers and this layout has {len(HEIGHTS)} (their delays and levels were still aligned)")
 
     # ---- new room -----------------------------------------------------------------------------------------------------------------
     new_room = copy.deepcopy(room)
@@ -262,8 +265,10 @@ def propose(meas, room, opts=None, previous=None):
                 for s in meas.pos[pi].ch[n].notes:
                     if s not in notes and (pi == 0 or "no usable" not in s):
                         notes.append(s)
-        if n == "LFE":
-            notes.append("LFE: delay and trim not changed (Z906 sub lag is internal; sub knob untouched); arrival is the 40-120 Hz envelope, a rough guide; level is 40-100 Hz")
+        if n == SUB:
+            notes.append(f"{n}: delay and trim not changed (Z906 sub lag is internal; sub knob untouched); arrival is the 40-120 Hz envelope, a rough guide; level is 40-100 Hz"
+                         if ST.ACTIVE.amp_bass_management else
+                         f"{n}: delay and trim follow {ST.REF} and are not re-timed from this measurement (the sub's arrival is a 40-120 Hz envelope, a rough guide); level is 40-100 Hz")
         if n in dead:
             notes.append("DEAD: excluded from every fit")
         snrs = meas.per_pos(n, "snr_db")

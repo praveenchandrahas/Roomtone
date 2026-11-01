@@ -25,7 +25,7 @@ import queue
 
 import numpy as np
 
-from . import ir as IR, profile as PF
+from . import ir as IR, profile as PF, stimulus as ST
 from .backend import Backend, BackendError, Capture, BLOCK_S, FS
 
 
@@ -38,6 +38,7 @@ class PipewireBackend(Backend):
     def __init__(self, mic=None, target=None, pw_play="pw-play", pw_record="pw-record", pactl="pactl", workdir=None, kill_grace_s=0.2,
                  pw_link="pw-link", method=None, link_timeout_s=3.0):
         self.mic = mic or os.environ.get("MIC")
+        self.CH_MAP = ",".join(ST.ACTIVE.port_names)           # the interface's port names in port order (the author's: FL,FR,RL,RR,FC,LFE,SL,SR)
         self.target = target or os.environ.get("AUTOCAL_PLAY_TARGET", "camilladsp-capture")
         self.method = method or os.environ.get("AUTOCAL_PLAY_METHOD", "link")
         if self.method not in ("link", "target"):
@@ -65,8 +66,8 @@ class PipewireBackend(Backend):
                 raise BackendError(f"{self.pw_link} not found (pipewire-bin)")
             rc, out = self._run(self.pw_link, "-i")
             n_in = sum(1 for l in out.splitlines() if l.strip().startswith(self.target + ":input_"))
-            if n_in != 8:
-                raise BackendError(f"{self.target} has {n_in} input ports (need 8). Is CamillaDSP running? Try: eq status")
+            if n_in != ST.NCH:
+                raise BackendError(f"{self.target} has {n_in} input ports (need {ST.NCH}). Is CamillaDSP running? Try: eq status")
         rc, out = self._run(self.pactl, "list", "short", "sources")
         sources = [l.split("\t")[1] for l in out.splitlines() if "\t" in l and ".monitor" not in l]
         mic = self.mic if self.mic in sources else None
@@ -103,7 +104,7 @@ class PipewireBackend(Backend):
 
     # -- audio -----------------------------------------------------------------------------------------------------------------------
     def record_noise(self, seconds, monitor=None):
-        return self.play_record(np.zeros((int(seconds * FS), 8)), monitor, stage="noise", pre_s=0.0, post_s=0.0, silent=True)
+        return self.play_record(np.zeros((int(seconds * FS), ST.NCH)), monitor, stage="noise", pre_s=0.0, post_s=0.0, silent=True)
 
     REC_CH = 2          # record both channels like rec.sh does (a TRRS mic adapter may carry the mic on one channel only)
 
@@ -267,10 +268,10 @@ class PipewireBackend(Backend):
         return cap
 
     def _start_player(self, wav):
-        """Starts pw-play and makes sure its 8 channels reach CamillaDSP's 8 capture inputs. Nothing is audible until the links exist
+        """Starts pw-play and makes sure its channels reach CamillaDSP's capture inputs. Nothing is audible until the links exist
         (autoconnect is off), and the stimulus starts with seconds of silence, so the short wait here costs nothing."""
         if self.method == "target":
-            return subprocess.Popen([self.pw_play, "--target", self.target, "--channels", "8", wav], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return subprocess.Popen([self.pw_play, "--target", self.target, "--channels", str(ST.NCH), wav], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         proc = subprocess.Popen([self.pw_play, "-P", "{ node.name=%s node.autoconnect=false }" % self.NODE, "--channel-map", self.CH_MAP, wav],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = time.monotonic() + self.link_timeout_s
@@ -278,13 +279,13 @@ class PipewireBackend(Backend):
         while True:
             rc, out = self._run(self.pw_link, "-o")
             outs = [l.strip() for l in out.splitlines() if l.strip().startswith(self.NODE + ":output_")]
-            if len(outs) == 8:
+            if len(outs) == ST.NCH:
                 break
             if proc.poll() is not None:
                 raise BackendError("pw-play exited before its ports appeared")
             if time.monotonic() > deadline:
                 self._stop(proc)
-                raise BackendError(f"expected 8 output ports from the test stream, found {len(outs)}")
+                raise BackendError(f"expected {ST.NCH} output ports from the test stream, found {len(outs)}")
             time.sleep(0.1)
         for i, o in enumerate(outs):                      # listing order = channel order, as in play-through-camilla.sh
             rc, _ = self._run(self.pw_link, o, f"{self.target}:input_{i + 1}")

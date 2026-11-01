@@ -1,5 +1,7 @@
 """report.html: one static, self-contained page per run (inline CSS and SVG, no scripts, no external requests)."""
 import html
+
+from . import stimulus as ST
 import os
 
 import numpy as np
@@ -53,9 +55,9 @@ def write_report(run_dir, res):
     bf = np.array(b["freq"]); cur = np.array(b["current_db"]); ext = np.array(b["proposed_extra_db"])
     bchart = svg_chart([("target", bf, np.interp(bf, f, tgt), "#212529", True), ("now", bf, cur, COLS[0], False), ("after (predicted)", bf, cur + ext, COLS[2], False),
                         ("proposed extra", bf, ext, COLS[1], True)], (25, 300), (-30, 40), "Bass: average of the Z906 channels", xticks=[30, 40, 50, 63, 80, 100, 125, 160, 200, 250])
-    allseries = [(n, f, res["response_db"][n]["avg"], COLS[i % 8], False) for i, n in enumerate(ch) if n in res["response_db"] and n != "LFE"]
+    allseries = [(n, f, res["response_db"][n]["avg"], COLS[i % 8], False) for i, n in enumerate(ch) if n in res["response_db"] and n != ST.SUB]
     fchart = svg_chart(allseries + [("target", f, tgt, "#212529", True)], (30, 20000), (-30, 40), "All speakers through the current profile (measured)")
-    pchart = svg_chart([(n, f, res["predicted_after_db"][n], COLS[i % 8], False) for i, n in enumerate(ch) if n in res["predicted_after_db"] and n != "LFE"] +
+    pchart = svg_chart([(n, f, res["predicted_after_db"][n], COLS[i % 8], False) for i, n in enumerate(ch) if n in res["predicted_after_db"] and n != ST.SUB] +
                        [("target", f, tgt, "#212529", True)], (30, 20000), (-30, 40), "All speakers after the proposal (predicted)")
     rows = ""
     for r in res["table"]:

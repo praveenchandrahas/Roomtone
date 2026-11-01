@@ -6,16 +6,28 @@ Safety rules enforced HERE (and checked again by every Backend before anything i
 * -12 dB below 35 Hz (a smooth step between 30 and 35 Hz; undone in the deconvolution, which uses the shaped waveform);
 * no steady tones: only sweeps, short chirps and short noise bursts.
 
-Channel order: HW_ORDER is the file/hardware order (FL FR RL RR FC LFE SL SR, as CamillaDSP and the USB interface see it).
+Channel order: HW_ORDER is the file/hardware order (on the author's rig FL FR RL RR FC LFE SL SR, as CamillaDSP and the USB interface see it).
 RESULT_ORDER is the order used in results.json (FL FR FC LFE SL SR RL RR; RL and RR are the ceiling heights).
+Both, HEIGHTS, BED, BANDS, COL (name -> column of the playback array = output port), NCH (columns), SUB (the sub's name or None) and REF (the speaker that
+carries the sync chirps and is the timing reference) come from the speaker layout (layout.py, docs/layouts.md): `activate(layout)` rewrites them in place,
+so modules that imported the lists keep seeing the current layout. At import the author's 5.1.2 is active, so everything is as it was before layouts.
 """
+import sys
+
 import numpy as np
+
+from . import layout as LAY
 
 FS = 48000
 HW_ORDER = ["FL", "FR", "RL", "RR", "FC", "LFE", "SL", "SR"]
 RESULT_ORDER = ["FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR"]
-HEIGHTS = ("RL", "RR")
-BED = ("FL", "FR", "FC", "SL", "SR")
+HEIGHTS = ["RL", "RR"]
+BED = ["FL", "FR", "FC", "SL", "SR"]
+COL = {n: i for i, n in enumerate(HW_ORDER)}
+NCH = 8
+SUB = "LFE"
+REF = "FL"
+ACTIVE = None
 CAP_DBFS = -20.0                  # hard cap on the generator PEAK level
 RAMP_START_DBFS = -50.0
 RAMP_STEP_DB = 6.0
@@ -28,6 +40,28 @@ LOW_STEP_DB, LOW_STEP_F = -12.0, (30.0, 35.0)
 
 BANDS = {"FL": (40.0, 20000.0), "FR": (40.0, 20000.0), "FC": (40.0, 20000.0), "SL": (40.0, 20000.0), "SR": (40.0, 20000.0),
          "RL": (100.0, 20000.0), "RR": (100.0, 20000.0), "LFE": (25.0, 200.0)}
+BAND_BY_ROLE = {"bed": (40.0, 20000.0), "height": (100.0, 20000.0), "sub": (25.0, 200.0)}
+
+
+def activate(layout):
+    """Make `layout` (a layout.py Layout) the layout every autocal module sees. Rewrites the module lists in place. Not thread-safe by design: one layout
+    per process (the Layout page says the control service must be restarted after a change)."""
+    global NCH, SUB, REF, ACTIVE
+    ACTIVE = layout
+    HW_ORDER[:] = layout.hw_order
+    RESULT_ORDER[:] = layout.result_order
+    HEIGHTS[:] = layout.heights
+    BED[:] = layout.beds
+    COL.clear()
+    COL.update({n: layout.port(n) for n in layout.result_order})
+    NCH = layout.n
+    SUB = layout.sub
+    REF = layout.reference
+    BANDS.clear()
+    BANDS.update({c["name"]: BAND_BY_ROLE[c["role"]] for c in layout.channels})
+    pf = sys.modules.get(__package__ + ".profile")
+    if pf is not None and hasattr(pf, "activate"):          # profile imports this module, so it may not be loaded yet (it activates itself when it is)
+        pf.activate(layout)
 
 
 class LevelCapError(AssertionError):
@@ -92,7 +126,7 @@ class Timeline:
         if level_db > CAP_DBFS or sync_db > CAP_DBFS:
             raise LevelCapError(f"requested levels {level_db}/{sync_db} dBFS exceed the {CAP_DBFS:.0f} dBFS cap")
         self.sweep_s, self.tail_s, self.level_db, self.sync_db = sweep_s, tail_s, level_db, sync_db
-        names = list(order or HW_ORDER) + (["FL"] if repeat_fl else [])
+        names = list(order or HW_ORDER) + ([REF] if repeat_fl else [])
         pitch = sweep_s + tail_s + 0.5
         t_sync = (lead_s, lead_s + 0.5, lead_s + 1.0)
         slot0 = lead_s + 3.5
@@ -100,19 +134,19 @@ class Timeline:
         for i, nm in enumerate(names):
             f0, f1 = BANDS[nm]
             t = slot0 + 0.5 + i * pitch
-            slots.append({"t": t, "ch": [HW_ORDER.index(nm)], "name": nm, "f0": f0, "f1": f1, "pilot_t": t - 0.5, "level_db": level_db})
+            slots.append({"t": t, "ch": [COL[nm]], "name": nm, "f0": f0, "f1": f1, "pilot_t": t - 0.5, "level_db": level_db})
         end = slots[-1]["t"] + sweep_s + tail_s + 1.0
-        self.cues = {"fs": FS, "names": HW_ORDER, "sweep_s": sweep_s, "slot_s": sweep_s + tail_s, "f0": 20.0, "f1": 20000.0,
+        self.cues = {"fs": FS, "names": list(HW_ORDER), "sweep_s": sweep_s, "slot_s": sweep_s + tail_s, "f0": 20.0, "f1": 20000.0,
                      "sync": list(t_sync) + [end, end + 0.5, end + 1.0], "total": end + 1.0 + 2.5, "slots": slots, "level_db": level_db,
                      "sync_db": sync_db}
         self.total = self.cues["total"]
 
     def render(self):
         """(n, 8) float array in hardware order. Asserts the cap before returning."""
-        x = np.zeros((int(self.total * FS) + 1, 8))
+        x = np.zeros((int(self.total * FS) + 1, NCH))
         c = chirp() * db_to_amp(self.sync_db); cp = chirp() * db_to_amp(min(self.sync_db, self.level_db + 6.0))
         for tt in self.cues["sync"]:
-            i = int(round(tt * FS)); x[i:i + len(c), 0] += c
+            i = int(round(tt * FS)); x[i:i + len(c), COL[REF]] += c
         for sl in self.cues["slots"]:
             ch = sl["ch"][0]
             i = int(round(sl["pilot_t"] * FS)); x[i:i + len(cp), ch] += cp
@@ -124,7 +158,7 @@ class Timeline:
     def describe(self):
         """Text timeline for --dry."""
         lines = [f"timeline {self.total:.0f} s; sweeps at {self.level_db:.1f} dBFS peak, sync chirps at {self.sync_db:.1f} dBFS (cap {CAP_DBFS:.0f})"]
-        lines.append(f"  {self.cues['sync'][0]:6.1f} s  sync chirps x3 on FL")
+        lines.append(f"  {self.cues['sync'][0]:6.1f} s  sync chirps x3 on {REF}")
         for sl in self.cues["slots"]:
             lines.append(f"  {sl['t']:6.1f} s  {sl['name']:<3} sweep {sl['f0']:.0f}-{sl['f1']:.0f} Hz, {self.sweep_s:.0f} s (pilot chirp 0.5 s before)")
         lines.append(f"  {self.cues['sync'][3]:6.1f} s  closing sync chirps x3")
@@ -236,11 +270,14 @@ ID_SLOT_S = 0.8
 
 
 def id_stimulus(level_db, fs=FS):
-    """Channel-ID: one quiet chirp per speaker (hardware order), 0.8 s apart. LFE gets a 40-120 Hz chirp. Returns (x (n,8), cues)."""
-    n = int((0.5 + 8 * ID_SLOT_S + 0.5) * fs); x = np.zeros((n, 8)); times = []
+    """Channel-ID: one quiet chirp per speaker (hardware order), 0.8 s apart. The sub gets a 40-120 Hz chirp. Returns (x (n, ports), cues)."""
+    n = int((0.5 + len(HW_ORDER) * ID_SLOT_S + 0.5) * fs); x = np.zeros((n, NCH)); times = []
     for i, nm in enumerate(HW_ORDER):
         t = 0.5 + i * ID_SLOT_S
-        c = chirp(ms=150, f0=40.0, f1=120.0) if nm == "LFE" else chirp()
-        k = int(t * fs); x[k:k + len(c), i] = c * db_to_amp(level_db); times.append(t)
+        c = chirp(ms=150, f0=40.0, f1=120.0) if nm == SUB else chirp()
+        k = int(t * fs); x[k:k + len(c), COL[nm]] = c * db_to_amp(level_db); times.append(t)
     assert_cap(x, what="channel-ID")
-    return x, {"times": times, "names": HW_ORDER}
+    return x, {"times": times, "names": list(HW_ORDER)}
+
+
+activate(LAY.default_layout())     # the author's 5.1.2 until an entry point loads the layout file (layout.py)
