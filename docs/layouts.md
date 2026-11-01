@@ -2,7 +2,9 @@
 
 Roomtone and [linux-theater-dsp](https://github.com/praveenchandrahas/linux-theater-dsp) used to be wired for one rig: the author's 5.1.2 system (a Z906 for five satellites and the sub, a USB 7.1 interface whose RL and RR outputs feed two ceiling speakers). Any other layout meant editing channel tables in several files. This note describes the one layout file that replaces those tables, what it controls, what it does not, how existing installs migrate, and where the limits are.
 
-*Status: design note, written before the code (phase 1 of 5). The sections "what is configurable" and "limits" are updated as each phase lands; the tables below match what is implemented at the time of the last edit to this file.*
+*Status: implemented. The layout file, the seven presets, the code that reads it (router, `set-eq.py`, upmix, autocal, status page, overlay) and the Layout page all exist and are tested. Only the author's 5.1.2 has run on real hardware; every other layout is tested in simulation only (see "Honest limits"). The tables below describe the code as it is.*
+
+**Quickest path:** see "Your layout" in the [README](../README.md#your-layout-five-minutes). `roomtone-layout --detect` or the Layout page (`http://127.0.0.1:8765/layout`) proposes a preset for your interface.
 
 ## The layout file
 
@@ -88,4 +90,6 @@ Written with an AI assistant; checked against simulated rooms and REW exports; u
 - **The 5.1.2 layout is the only one that has ever run on real hardware.** Every other preset and every edited layout has been exercised in unit tests and in the simulated room only: the generated CamillaDSP configs are checked for structure and, where `camilladsp -c` is available, syntax; the simulated autocal runs per preset check that the pipeline completes, orders channels correctly and produces proposals for every speaker. Whether the sound is right on a real 7.1.4 system is untested.
 - The simulated room's geometry for non-author layouts comes from the azimuth and elevation in the file, with the author's room dimensions. It shows the code works for N speakers; it says nothing about your room.
 - The identify tone, the interface detection (`pw-link`, `pactl`) and the player port names are tested against fake command output, not against live PipeWire on other hardware.
+- The Layout page's browser code was exercised in headless Chromium against the real service for the author's layout and a few presets; it has not been tried on other browsers or screen sizes beyond that.
+- Stereo and 5.1 upmixes work only when the layout is 5.1.2 or 7.1.2 (see above); on every other layout the adaptive engine is switched off by design, not by a bug.
 - Nobody but the author has repeated any of this.
