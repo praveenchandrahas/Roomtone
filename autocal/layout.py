@@ -597,13 +597,46 @@ def parse_sink_ports(text):
     return out
 
 
-def detect_interfaces(pw_link="pw-link"):
-    """[(device, [port suffixes])] of the sinks PipeWire currently shows, or [] when pw-link is unavailable. Read-only."""
+PACTL_NAMES = {"front-left": "FL", "front-right": "FR", "rear-left": "RL", "rear-right": "RR", "front-center": "FC", "lfe": "LFE",
+               "side-left": "SL", "side-right": "SR"}
+
+
+def parse_pactl_sinks(text):
+    """From `pactl list sinks`: {sink name: [port suffix, ...]} using each sink's 'Channel Map:' (front-left -> FL, lfe -> LFE, aux8 -> AUX8 ...).
+    PipeWire names a sink's ports playback_<suffix> with the same channel names, so this agrees with parse_sink_ports for ALSA sinks."""
+    out, name = {}, None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("Name:"):
+            name = s[5:].strip()
+        elif s.startswith("Channel Map:") and name:
+            chans = [c.strip() for c in s.split(":", 1)[1].split(",") if c.strip()]
+            ports = []
+            for i, c in enumerate(chans):
+                m = re.fullmatch(r"aux(\d+)", c)
+                ports.append(PACTL_NAMES.get(c) or (f"AUX{int(m.group(1))}" if m else f"AUX{i}"))
+            if not name.startswith(("camilladsp", "mpv", "theater-")) and not name.endswith(".monitor"):
+                out[name] = ports
+            name = None
+    return out
+
+
+def detect_interfaces(pw_link="pw-link", pactl="pactl"):
+    """[(device, [port suffixes])] of the sinks PipeWire currently shows (widest first), or [] when neither tool answers. Read-only.
+    pw-link -i is asked first; if it lists no playback ports (or is missing), `pactl list sinks` is used."""
+    found = {}
     try:
         r = subprocess.run([pw_link, "-i"], capture_output=True, text=True, timeout=5)
+        found = parse_sink_ports(r.stdout)
     except (OSError, subprocess.SubprocessError):
-        return []
-    return sorted(parse_sink_ports(r.stdout).items(), key=lambda kv: -len(kv[1]))
+        pass
+    if not found:
+        try:
+            r = subprocess.run([pactl, "list", "sinks"], capture_output=True, text=True, timeout=5)
+            found = parse_pactl_sinks(r.stdout)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return sorted(found.items(), key=lambda kv: -len(kv[1]))
 
 
 def suggest_preset(n_ports):
@@ -657,7 +690,7 @@ def _cli(argv):
         if a.detect:
             found = detect_interfaces()
             if not found:
-                print("no output ports found (is PipeWire running? `pw-link -i` shows them). Nothing written.")
+                print("no output ports found (is PipeWire running? `pw-link -i` or `pactl list sinks` shows them). Nothing written.")
                 return 1
             for dev, ports in found:
                 print(f"{dev}: {len(ports)} ports ({', '.join(ports)}) -> suggested preset {suggest_preset(len(ports))}")
