@@ -2,6 +2,15 @@
 import json, os, sys
 from lupa import LuaRuntime
 
+
+def table_rec(lua, obj):
+    """lua.table_from(obj, recursive=True) needs lupa >= 2.0; Ubuntu 24.04's python3-lupa is older, so convert by hand."""
+    if isinstance(obj, dict):
+        return lua.table_from({k: table_rec(lua, v) for k, v in obj.items()})
+    if isinstance(obj, (list, tuple)):
+        return lua.table_from([table_rec(lua, v) for v in obj])
+    return obj
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = open(os.path.join(HERE, "..", "overlay", "theater_status.lua")).read()
 ok = True
@@ -62,7 +71,7 @@ def world(uosc=False, ctl=True, menu="auto"):
         register_event=lambda *a: None, get_script_name=lambda: "theater_status",
         find_config_file=lambda n: "/cfg/scripts" if uosc else None,
         commandv=lambda *a: msgs.append(list(a)))
-    utils = lua.table(parse_json=lambda s: lua.table_from(json.loads(s), recursive=True) if s else None,
+    utils = lua.table(parse_json=lambda s: table_rec(lua, json.loads(s)) if s else None,
                       format_json=lambda t: json.dumps(_py(t)), file_info=lambda p: True if (uosc and "uosc" in p) else (True if p.endswith("/eq") else None))
     lua.globals().mkenv(lua.table(mp=mp, utils=utils, opts=lua.table(menu=menu, eq="/bin/eq")))
     api = lua.execute(SRC.replace("local mp = require", "local mp = require", 1))
@@ -86,11 +95,11 @@ def _py(x):
 
 # ---- status panel
 api, calls, msgs, bindings, osd, overlay, st, lua = world()
-api.state.status = lua.table_from(STATUS, recursive=True)
+api.state.status = table_rec(lua, STATUS)
 text = "\n".join(api.lines_for_panel().values())
 check("status lines show source, path, profile, engine and DSP numbers", all(s in text for s in ("truehd 8ch -> film", "through CamillaDSP", "film  (mode auto)", "Engine: on", "load 8%", "underruns/min 0")), text)
 check("ASS escaping neutralises braces and backslashes", "{" not in api.esc("a{b}\\c").replace("\\{", "") and "\\{" in api.esc("{"))
-api.state.status = lua.table_from({"eq": {"switch": "off"}, "dsp": {}, "mpv": {}}, recursive=True)
+api.state.status = table_rec(lua, {"eq": {"switch": "off"}, "dsp": {}, "mpv": {}})
 check("a sparse status does not crash the panel", "OFF" in "\n".join(api.lines_for_panel().values()))
 
 # ---- layout line (docs/layouts.md): nothing for the author's 5.1.2, a line for any other layout, a warning for a broken file
@@ -98,13 +107,13 @@ for lay, want, absent in (({"name": "5.1.2", "error": None, "channels": [{}] * 8
                           ({"name": "7.1.4", "channels": [{}] * 12}, "Layout:  7.1.4  (12 speakers)", None),
                           ({"name": "5.1.2", "error": "line 3: bad port"}, "file invalid, using 5.1.2", None)):
     st2 = dict(STATUS); st2["layout"] = lay
-    api.state.status = lua.table_from(st2, recursive=True)
+    api.state.status = table_rec(lua, st2)
     t2 = "\n".join(api.lines_for_panel().values())
     check(f"overlay layout line for {lay['name']} {'(error)' if lay.get('error') else ''}", (want in t2) if want else (absent not in t2), t2)
 
 # ---- rows: current value, next value, guards
 api, calls, msgs, bindings, osd, overlay, st, lua = world()
-api.state.status = lua.table_from(STATUS, recursive=True)
+api.state.status = table_rec(lua, STATUS)
 items = list(api.build_items(1).values())
 check("one row each for EQ, mode, both flavours and the engine, showing current values",
       [(i["label"], i["value"]) for i in items] == [("EQ", "on"), ("Profile mode", "auto"), ("Stereo flavour", "balanced"), ("5.1 flavour", "balanced"), ("Adaptive engine", "on")], str([(i["label"], i["value"]) for i in items]))
@@ -112,11 +121,11 @@ check("next values step through the lists", [i["next"] for i in items] == ["off"
 back = list(api.build_items(-1).values())
 check("previous values wrap round", [i["next"] for i in back] == ["off", "bed", "voice", "subtle", "off"], str([i["next"] for i in back]))
 check("only EQ going on is unrisky; EQ off, mode, flavours and engine ask first", [i["risky"] for i in items] == [True, True, True, True, True])
-api.state.status = lua.table_from({"eq": {"switch": "off"}, "dsp": {}, "mpv": {}}, recursive=True)
+api.state.status = table_rec(lua, {"eq": {"switch": "off"}, "dsp": {}, "mpv": {}})
 eqrow = list(api.build_items(1).values())[0]
 check("with EQ off, the EQ row steps to on and does not ask", eqrow["next"] == "on" and not eqrow["risky"])
 check("argv are fixed lists of enum words only", all(all(a.isalnum() for a in list(i["args"].values())) for i in list(api.build_items(1).values())))
-api.state.status = lua.table_from(STATUS, recursive=True)
+api.state.status = table_rec(lua, STATUS)
 items = list(api.build_items(1).values())
 api.perform(items[1])
 check("perform runs `eq mode film` and nothing else", [c for c in calls if c[0] == "/bin/eq" and c[1] != "status"] == [["/bin/eq", "mode", "film"]], str(calls))
