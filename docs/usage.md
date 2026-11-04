@@ -32,19 +32,53 @@ A `--mode five` run uses five microphone positions (centre plus four offsets); t
 
 A **FAIL** verdict can still be applied with `autocal apply --force` (or the page's "Apply anyway" confirmation after a warning) — autocal refuses without it. `python3 -m autocal mic --spectrum` records 15 s of nothing playing and prints the noise floor per octave band, to tell a cycling compressor or fan from electrical hum before a calibration run.
 
-## Status and control page (`gui/`)
+## Theatre control: the status and control page (`gui/`) and the mpv overlay
 
-`gui/install-ctld.sh` installs `theater-ctld` as a user service on `127.0.0.1:8765` (needs the router's `eq status --json` from linux-theater-dsp first; `remove` undoes it).
+Roomtone does not apply room corrections through the router — that's `autocal`'s job (above), and only with your sign-off. What `gui/` and `overlay/` give you is **theatre control**: a live view of what the rig is doing, and switches for it, that talk to `linux-theater-dsp`'s router (`eq` / `theater-route`) and to `autocal`. Neither page ever applies a correction by itself.
 
-- **Control page** (`/`): now-playing, profile and engine, CamillaDSP live numbers (needs its websocket, `-p 1234 -a 127.0.0.1`), buttons for EQ, profile mode, flavours and engine, and a live sound-field view of each speaker's level in a plan view of the room. It is the signal after EQ, not room sound pressure.
-- **Layout page** (`/layout`): choose a preset or edit speakers, map each to an output port, identify a speaker with a quiet tone, preview the plan view, save with a backup.
-- **Autocal page** (`/autocal`): start a measurement, watch it live (step, progress, position, mic meters, noise floor, console output), answer "move the microphone" prompts, read the verdict and per-channel table of any past run, and apply a finished run's proposal. It runs the same `autocal` commands you would type, as a subprocess from a fixed table — no shell, no free-form options.
+`gui/install-ctld.sh` installs `theater-ctld` as a user service on `127.0.0.1:8765` (needs the router's `eq status --json` from `linux-theater-dsp` first; `remove` undoes it).
 
-All pages are localhost-only, with a token on every action and a fixed action table (no shell, no free-form options).
+### Control page (`/`)
 
-## mpv overlay
+Now-playing, profile and engine, CamillaDSP's live numbers (needs its websocket, `-p 1234 -a 127.0.0.1`), and buttons for EQ, profile mode, flavours and engine — this is the page that actually drives the router's `eq` command day to day.
 
-`overlay/install-theater-status.sh --bindings` installs the mpv script and binds the **C** key. It shows one panel: status first, then a row per setting showing its current value; Enter steps a row, and risky changes ask first.
+A live **sound field** shows the level of each output (for the author's layout: FL FR FC LFE SL SR and the two ceiling speakers; your own layout file's speakers otherwise) in a plan view of the room plus meters, about 20 times a second (`/v1/levels`, read-only `GetPlaybackSignalPeak/Rms`). This is the signal level after EQ, not room sound pressure and not object positions — the "loudest" speaker and the glow centre are level-weighted, not a rendered object position.
+
+Localhost only, a token on every action, a fixed action table (no shell, no free-form options). Tests: `tests/test_ctld.py`.
+
+<p align="center"><img src="../img/control-dark.png" alt="The Roomtone control page: a plan view of the 5.1.2 room with live per-speaker levels, eight meters, now playing, and the controls" width="880"></p>
+
+*The control page (dark theme; it follows your system theme, so there's a light one too). These screenshots run against a simulated CamillaDSP that generates moving levels, so the numbers and "now playing" text are made up for the picture, not a recording of a real film.*
+
+### Layout page (`/layout`)
+
+Choose a preset or edit speakers, map each to an output port, identify a speaker with a quiet tone (at most -40 dBFS, 2 s, that one channel only), preview the plan view, and save with a backup. Same security model as the control page; no shell, no free-form options. Tests: `tests/test_ctld_layout.py` (fake `pw-play` and `pw-link`).
+
+### Autocal page (`/autocal`)
+
+Start a measurement, watch it live (step, progress, position, mic meters, the room's noise floor, the run's console output), answer "move the microphone" with **Continue** or **Stop the run**, read the verdict, warnings, and the per-channel table of any past run, and **apply** a finished run's proposal. It reads `runs/` from the checkout `gui/install-ctld.sh` pointed it at.
+
+It runs the exact same `autocal` commands you'd type yourself, as a subprocess from a fixed table — no shell, no free-form options. The only variable parts are the run id (`YYYYMMDD-HHMMSS`) and the runs folder the service computed.
+
+**Guardrails:**
+
+- One run at a time — also blocked while a run is going in a terminal, or while a trial of an already-applied profile is still pending.
+- Anything that plays sound asks first and says what will be played.
+- The -20 dBFS level cap and the live safety monitor live inside `autocal` itself; the page has no way to change them.
+- **Stop** writes `control/abort` (the same thing Ctrl-C does in a terminal) and, for a run the page started, follows up with SIGINT after 3 s and SIGTERM after 8 s if it's still alive.
+- **Apply** shows what will change first (per-channel delay and trim, extra bass filters, height tone — the run's starting room against the proposed one), the verdict and warnings, and that it starts a timed trial with a backup made first. You then press **Keep it** or **Roll back now**, or it reverts on its own. A **FAIL** verdict needs an explicit "apply anyway (force)" confirmation — same as `autocal apply --force`; `autocal` itself refuses without it. Simulated runs are never applied to the real system.
+- The service runs with `KillMode=process`, so restarting the page doesn't kill a measurement in progress or the watchdog reverting a trial.
+
+Tests: `tests/test_ctld.py` (a fake `autocal` records the exact argv).
+
+<p align="center"><img src="../img/autocal-page-dark.png" alt="The autocal page during a simulated run waiting for the microphone to be moved: run status, the Continue prompt, console output, and the start buttons disabled while it runs" width="880"></p>
+<p align="center"><img src="../img/autocal-apply-dialog.png" alt="The apply confirmation: verdict, what changes, warnings, and the timed trial" width="880"></p>
+
+*The first screenshot is a real `autocal run --simulate` driven from the page (no sound played); the second uses a generated result from `autocal/web/mock.py`, so its numbers are made up.*
+
+### mpv overlay (`overlay/`)
+
+`overlay/install-theater-status.sh --bindings` installs the mpv script and binds the **C** key. One panel: status first, then a row per setting showing its current value; Enter steps a row, and risky changes ask first. Tests: `tests/test_theater_status.py` (mocked mpv, needs `pip install lupa`).
 
 ## Setting up your own speaker layout
 
