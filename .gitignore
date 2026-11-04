@@ -15,3 +15,6 @@ __pycache__/
 
 # autocal run folders (real runs hold recordings and measurements)
 runs/
+
+# mkdocs build output
+site/

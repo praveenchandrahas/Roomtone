@@ -4,7 +4,7 @@ Roomtone and [linux-theater-dsp](https://github.com/praveenchandrahas/linux-thea
 
 *Status: implemented. The layout file, the seven presets, the code that reads it (router, `set-eq.py`, upmix, autocal, status page, overlay) and the Layout page all exist and are tested. Only the author's 5.1.2 has run on real hardware; every other layout is tested in simulation only (see "Honest limits"). The tables below describe the code as it is.*
 
-**Quickest path:** see "Your layout" in the [README](../README.md#your-layout-five-minutes). `roomtone-layout --detect` or the Layout page (`http://127.0.0.1:8765/layout`) proposes a preset for your interface.
+**Quickest path:** see "Setting up your own speaker layout" in [Usage](usage.md#setting-up-your-own-speaker-layout). `roomtone-layout --detect` or the Layout page (`http://127.0.0.1:8765/layout`) proposes a preset for your interface.
 
 ## The layout file
 

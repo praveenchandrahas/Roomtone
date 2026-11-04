@@ -1,0 +1,30 @@
+site_name: Roomtone
+site_description: Roomtone is open tooling for measuring a Linux home theatre and calibrating it in a closed loop, with CamillaDSP, a timed trial and a rollback.
+repo_url: https://github.com/praveenchandrahas/Roomtone
+repo_name: praveenchandrahas/Roomtone
+docs_dir: docs
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      toggle: {icon: material/brightness-7, name: Switch to dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      toggle: {icon: material/brightness-4, name: Switch to light mode}
+  features: [navigation.instant, navigation.sections, navigation.top, toc.integrate, content.code.copy]
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - tables
+  - toc:
+      permalink: true
+nav:
+  - Home: index.md
+  - Install: install.md
+  - Usage: usage.md
+  - Speaker layouts: layouts.md
+  - Measurement method: measurement.md

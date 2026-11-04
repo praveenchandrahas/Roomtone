@@ -36,7 +36,7 @@ lowering the playback level by roughly 10 dB gives a clean recording and the **c
 |------|------|---------|
 | Frequency response at the seat | REW sweeps (`data/rew/`) | Where the room modes and nulls are; fit cut filters |
 | Preset comparison | `rec.sh` recordings of real film clips, band-energy comparison against "direct" | Did the preset change what was meant to change, by how much |
-| Arrival time and level per speaker | `make-delaytest.py` + `analyze-delaytest.py` | Delays and trims ([alignment.md](alignment.md)) |
+| Arrival time and level per speaker | `make-delaytest.py` + `analyze-delaytest.py` | Delays and trims |
 | Imaging by ear | `make-bedtest.py` | Channel order, phantom centre, pans, click alignment, polarity pairs, dialogue |
 
 ### The bed test
