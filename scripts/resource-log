@@ -683,8 +683,17 @@ def main():
     problems += [f"- {l}" for l in jl] if jok else [f"- {jl[0]}"]
     problems.append(count_line("CamillaDSP clipped samples added during the run", counter("cdsp_clipped"), why=cd.why or "no data"))
     ld, bl = col("cdsp_load_pct"), col("cdsp_buffer_level")
+    # CamillaDSP's GetBufferLevel is documented to return 0 unconditionally unless enable_rate_adjust is
+    # set in devices.capture; it is not set in this project's configs (no async-resampling clock-drift
+    # problem to correct, since capture and playback are both PipeWire nodes on the same graph clock). So
+    # every sample reading exactly 0 is the config working as expected, not a measurement of an empty
+    # buffer -- do not report it the same way a real (non-zero-floor) reading would be reported.
+    bl_text = "n/a"
+    if bl:
+        bl_text = (f"min {bl['min']:.0f}, mean {bl['mean']:.0f}, max {bl['max']:.0f} samples"
+                   if bl["max"] > 0 else "always 0 (expected: enable_rate_adjust is off in this config, and GetBufferLevel always reads 0 when it's off -- not a sign of an empty buffer)")
     problems.append("- CamillaDSP processing load: " + (fmt(ld, " %") if ld else f"not measured ({cd.why or 'no data'})")
-                    + "; buffer level: " + (f"min {bl['min']:.0f}, mean {bl['mean']:.0f}, max {bl['max']:.0f} samples" if bl else "n/a"))
+                    + "; buffer level: " + bl_text)
     problems.append(count_line("PipeWire xruns added (pw-top ERR column, best effort)", counter("pw_err_sum"), why="no pw-top, or its output was not understood; see pw-top.log"))
     mdrop = [counter(k) for k in ("mpv_drops", "mpv_decoder_drops", "mpv_vo_delayed", "mpv_mistimed")]
     if any(x is not None for x in mdrop):

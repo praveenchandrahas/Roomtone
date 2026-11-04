@@ -41,9 +41,9 @@ def recv_exact(s, n):
     return b
 
 
-def fake_camilladsp_ws(port_holder, stop):
+def fake_camilladsp_ws(port_holder, stop, buffer_level=2048):
     """Minimal server side of RFC 6455: handshake, then answer each masked text frame with the value for that command."""
-    values = {"GetProcessingLoad": 12.5, "GetBufferLevel": 2048, "GetClippedSamples": 0, "GetState": "Running"}
+    values = {"GetProcessingLoad": 12.5, "GetBufferLevel": buffer_level, "GetClippedSamples": 0, "GetState": "Running"}
     clipped = {"n": 0}
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
@@ -178,6 +178,7 @@ done
     check("nothing is counted as idle while mpv ran the whole time", idle and "buffer-empty/underrun lines 0" in idle[0], s)
     check("the most frequent problem message is named", 'buffer empty, outputting silence" x4' in s, s)
     check("CamillaDSP processing load comes from the websocket", "processing load: mean 12.5" in s, s)
+    check("a real (nonzero) buffer level is reported as a measurement", "buffer level: min 2048, mean 2048, max 2048 samples" in s, s)
     check("clipped samples are the growth of the counter", "clipped samples added during the run: " in s and "not measured" not in s.split("clipped samples added during the run: ")[1].split("\n")[0], s)
     check("PipeWire xruns are read from pw-top", "xruns added (pw-top ERR column, best effort): 0" in s, s)
     check("mpv frame drops and sync come from the IPC socket", "dropped by the decoder 0" in s and "audio/video sync offset mean 12.0 ms" in s, s)
@@ -206,6 +207,19 @@ done
     check("no mpv socket: frame drops say not measured", "mpv frame drops and a/v sync: not measured".lower() in low, s2)
     check("no GPU tool: GPU says not measured", "gpu: not measured" in low, s2)
     check("no mpv process: the table covers all samples and says so", "mpv was never seen running" in s2, s2)
+
+    # CamillaDSP's GetBufferLevel always reads 0 when enable_rate_adjust is off in the config (true for this project's
+    # configs) -- that must not be reported as if it were a measured empty buffer.
+    stop.clear()
+    port_holder2 = []
+    threading.Thread(target=fake_camilladsp_ws, args=(port_holder2, stop, 0), daemon=True).start()
+    time.sleep(0.3)
+    env3 = dict(os.environ, PATH=bare + ":/usr/bin:/bin", THEATER_CAMILLA_WS=f"127.0.0.1:{port_holder2[0]}",
+                THEATER_MPV_SOCK=os.path.join(tmp, "nosuch.sock"), RESOURCE_LOG_DRM=os.path.join(tmp, "nodrm"))
+    r3, s3 = run_script(env3, os.path.join(tmp, "zerobuf"), 3)
+    check("it runs with an all-zero buffer level", r3.returncode == 0 and "## Problems" in s3, r3.stderr[-400:])
+    check("an all-zero buffer level is explained, not reported as a measurement",
+          "buffer level: always 0 (expected: enable_rate_adjust is off" in s3 and "min 0, mean 0, max 0 samples" not in s3, s3)
 finally:
     stop.set()
     for p in procs:
