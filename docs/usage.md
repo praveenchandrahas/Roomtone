@@ -9,7 +9,7 @@
 | Analyse | Per-speaker arrival time, level, polarity, bass response and the heights' tone against the bed, with the microphone's calibration file applied | `autocal/`, `tools/` |
 | Propose | New delays and trims, polarity flips, a consensus parametric cut below 100 Hz towards a target (the author's deliberate bass hump, `drone2`), and a tone and level match for the height speakers. Boosts only with `--allow-boost`. Changes under 0.15 ms or 1 dB are ignored | `autocal/` |
 | Apply, safely | Backs up the live config, installs the change, starts a **timed trial** that reverts by itself unless you press **Keep it**; **Roll back** restores the backup | `autocal apply`, `gui/` |
-| Show | A local control page (127.0.0.1 only): a plan view of the room with live per-speaker levels, what is playing, CamillaDSP load, and the autocal page with live progress, "move the microphone" prompts and graphs. The same panel is in mpv (press **C**) | `gui/`, `overlay/` |
+| Show | A local control page (127.0.0.1 only): a 3D view of the room (drag to turn it; 3D, Top and Side presets) with live per-speaker levels, what is playing, CamillaDSP load, and the autocal page with live progress, "move the microphone" prompts and graphs. The same panel is in mpv (press **C**) | `gui/`, `overlay/` |
 | Diagnose | Separate kits for the sub (how low it goes, where it rattles), dialogue (a STIPA-style estimate), early reflections, drift between two playback clocks, and a load and dropout logger for films | `tools/`, `scripts/resource-log` |
 
 ## Running autocal
@@ -42,11 +42,11 @@ Roomtone does not apply room corrections through the router — that's `autocal`
 
 Now-playing, profile and engine, CamillaDSP's live numbers (needs its websocket, `-p 1234 -a 127.0.0.1`), and buttons for EQ, profile mode, flavours and engine — this is the page that actually drives the router's `eq` command day to day.
 
-A live **sound field** shows the level of each output (for the author's layout: FL FR FC LFE SL SR and the two ceiling speakers; your own layout file's speakers otherwise) in a plan view of the room plus meters, about 20 times a second (`/v1/levels`, read-only `GetPlaybackSignalPeak/Rms`). This is the signal level after EQ, not room sound pressure and not object positions — the "loudest" speaker and the glow centre are level-weighted, not a rendered object position.
+A live **sound field** shows the level of each output (for the author's layout: FL FR FC LFE SL SR and the two ceiling speakers; your own layout file's speakers otherwise) in a 3D view of a schematic room (drag to turn it; positions are schematic, heights fixed by speaker kind) plus meters, about 20 times a second (`/v1/levels`, read-only `GetPlaybackSignalPeak/Rms`). This is the signal level after EQ, not room sound pressure and not object positions — the "loudest" speaker and the glow centre are level-weighted, not a rendered object position.
 
 Localhost only, a token on every action, a fixed action table (no shell, no free-form options). Tests: `tests/test_ctld.py`.
 
-<p align="center"><img src="../img/control-dark.png" alt="The Roomtone control page: a plan view of the 5.1.2 room with live per-speaker levels, eight meters, now playing, and the controls" width="880"></p>
+<p align="center"><img src="../img/control-dark.png" alt="The Roomtone control page: a 3D view of the 5.1.2 room with live per-speaker levels, eight meters, now playing, and the controls" width="880"></p>
 
 *The control page (dark theme; it follows your system theme, so there's a light one too). These screenshots run against a simulated CamillaDSP that generates moving levels, so the numbers and "now playing" text are made up for the picture, not a recording of a real film.*
 

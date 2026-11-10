@@ -69,7 +69,9 @@ dt { color: var(--muted); } dd { margin: 0; word-break: break-word; }
 /* the stage: room plan + meters */
 .stage { padding: 14px 14px 16px; }
 .stage .head { padding: 4px 6px 0; }
-#room { display: block; width: 100%; aspect-ratio: 16 / 10; min-height: 280px; max-height: 560px; }
+#room { display: block; width: 100%; aspect-ratio: 16 / 10; min-height: 280px; max-height: 560px; cursor: grab; touch-action: pan-y; user-select: none; }
+.viewbar { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 2px 6px 0; }
+.seg.sm button { padding: 3px 11px; min-height: 26px; font-size: 12px; }
 @media (max-width: 600px) { #room { aspect-ratio: 4 / 4.2; } }
 .meters { display: flex; gap: 6px; justify-content: center; align-items: flex-end; padding: 6px 4px 0; border-top: 1px solid var(--line); margin-top: 6px; }
 .grp { display: flex; gap: 6px; padding: 12px 8px 0; position: relative; flex: 1; justify-content: center; }
@@ -127,6 +129,8 @@ footer { margin-top: 18px; text-align: center; }
   <div class="layout">
     <section class="card stage" aria-labelledby="h-room">
       <div class="head"><h2 id="h-room">Sound field <span class="tag" id="room-tag">live, after EQ</span></h2></div>
+      <div class="viewbar"><span class="small">Drag to turn the room</span><div class="seg sm" id="views" role="group" aria-label="View">
+        <button type="button" data-view="3d" aria-pressed="true">3D</button><button type="button" data-view="top" aria-pressed="false">Top</button><button type="button" data-view="side" aria-pressed="false">Side</button></div></div>
       <canvas id="room" aria-hidden="true"></canvas>
       <div class="chip" id="lvlchip" role="status"></div>
       <div class="meters" id="meters" role="group" aria-label="Output level per speaker"></div>
@@ -220,6 +224,7 @@ function render(s) {
   if (dsp.profile) pills.append(pill(dsp.profile + (pinned ? " · pinned" : "")));
   const cur = { eq: eq.switch, mode: dsp.pmode, engine: en.state, stereo: (dsp.flavours || {}).stereo, bed: (dsp.flavours || {}).bed };
   for (const box of document.querySelectorAll(".seg")) {
+    if (box.id === "views") continue;                 // the camera buttons are local to this page, not daemon actions
     const act = box.dataset.act, kind = box.dataset.kind, key = kind || act;
     if (!box.children.length) for (const o of OPTS[key]) { const b = el("button", o); b.type = "button"; b.dataset.value = o; b.addEventListener("click", () => doAction(act, o, kind)); box.append(b); }
     for (const b of box.children) b.setAttribute("aria-pressed", String(b.dataset.value === cur[key]));
@@ -339,86 +344,163 @@ matchMedia("(prefers-color-scheme: light)").addEventListener("change", resize);
 const P = o => ({ x: o.x * W, y: o.y * H });
 const rgba = (rgb, a) => `rgba(${rgb},${Math.max(0, Math.min(1, a)).toFixed(3)})`;
 
-let focus = { x: LISTENER.x, y: LISTENER.y, a: 0 }, trail = [];
+/* ---- 3D sound field -----------------------------------------------------------------------------------------------
+   No library: the page's CSP only allows scripts from this server, and a handful of speakers needs nothing more than a
+   perspective projection onto the 2D canvas. The room is a schematic box (not the measured room): the plan positions
+   above give x (left to right) and y (screen to back wall); bed speakers sit at ear height, heights on the ceiling, the
+   sub on the floor. World axes: X to the listener's right, Y from the back wall towards the screen, Z up. */
+const ROOM = { w: 1, d: 1.5, h: .7 };                  // half-width, depth, height (arbitrary units, about 4 : 3 : 1.4)
+const ZK = { bed: .24, height: .62, lfe: .07 };         // speaker centre heights by kind
+const world = n => ({ x: (SPK[n].x - .5) * 2 * ROOM.w, y: (1 - SPK[n].y) * ROOM.d, z: ZK[SPK[n].kind] });
+const EAR = { x: (LISTENER.x - .5) * 2 * ROOM.w, y: (1 - LISTENER.y) * ROOM.d, z: .26 };
+const VIEWS = { "3d": { yaw: -.55, pitch: .48 }, top: { yaw: 0, pitch: 1.53 }, side: { yaw: 1.5708, pitch: .14 } };
+const view = { yaw: VIEWS["3d"].yaw, pitch: VIEWS["3d"].pitch }, goal = { yaw: view.yaw, pitch: view.pitch };
+const TARGET = { x: 0, y: ROOM.d * .5, z: ROOM.h * .38 };
+let cam = null, FOCAL = 600;
+function setCamera() {
+  const cp = Math.cos(view.pitch), sp = Math.sin(view.pitch), sy = Math.sin(view.yaw), cy = Math.cos(view.yaw);
+  const R = 5.6;
+  const c = { x: TARGET.x + R * sy * cp, y: TARGET.y - R * cy * cp, z: TARGET.z + R * sp };
+  const f = { x: -sy * cp, y: cy * cp, z: -sp };                       // forward
+  const rl = Math.hypot(f.y, f.x), r = { x: f.y / rl, y: -f.x / rl, z: 0 };   // right = forward x up
+  const u = { x: r.y * f.z - r.z * f.y, y: r.z * f.x - r.x * f.z, z: r.x * f.y - r.y * f.x };
+  cam = { c, f, r, u };
+  FOCAL = Math.min(H * 1.08, W * .62) / Math.tan(.31);
+}
+function proj(x, y, z) {
+  const v = { x: x - cam.c.x, y: y - cam.c.y, z: z - cam.c.z };
+  const zc = v.x * cam.f.x + v.y * cam.f.y + v.z * cam.f.z, xc = v.x * cam.r.x + v.y * cam.r.y, yc = v.x * cam.u.x + v.y * cam.u.y + v.z * cam.u.z;
+  const s = FOCAL / zc;
+  return { x: W / 2 + xc * s, y: H / 2 - yc * s, d: zc, s };
+}
+const seg3 = (a, b) => { const p = proj(a.x, a.y, a.z), q = proj(b.x, b.y, b.z); cx.beginPath(); cx.moveTo(p.x, p.y); cx.lineTo(q.x, q.y); cx.stroke(); };
+let focus = { x: LISTENER.x, y: LISTENER.y, z: ZK.bed, a: 0 }, trail = [];
+
 function drawRoom(now) {
   cx.clearRect(0, 0, W, H);
-  const pad = 10, rw = W - pad * 2, rh = H - pad * 2;
-  // floor and grid
-  cx.save(); cx.translate(pad, pad);
-  cx.beginPath(); cx.roundRect(0, 0, rw, rh, 18); cx.clip();
-  const floor = cx.createRadialGradient(rw * .5, rh * .6, 0, rw * .5, rh * .6, rw * .65);
-  floor.addColorStop(0, rgba(col.ink, light ? .05 : .045)); floor.addColorStop(1, rgba(col.ink, 0));
-  cx.fillStyle = floor; cx.beginPath(); cx.roundRect(0, 0, rw, rh, 18); cx.fill();
-  cx.strokeStyle = rgba(col.ink, .09); cx.lineWidth = 1; cx.beginPath(); cx.roundRect(.5, .5, rw - 1, rh - 1, 18); cx.stroke();
-  cx.strokeStyle = rgba(col.ink, .04);
-  for (let i = 1; i < 12; i++) { cx.beginPath(); cx.moveTo(rw * i / 12, 8); cx.lineTo(rw * i / 12, rh - 8); cx.stroke(); }
-  for (let i = 1; i < 8; i++) { cx.beginPath(); cx.moveTo(8, rh * i / 8); cx.lineTo(rw - 8, rh * i / 8); cx.stroke(); }
-  // screen
-  const sg = cx.createLinearGradient(rw * .22, 0, rw * .78, 0);
-  sg.addColorStop(0, rgba(col.ink, 0)); sg.addColorStop(.5, rgba(col.ink, .55)); sg.addColorStop(1, rgba(col.ink, 0));
-  cx.fillStyle = sg; cx.fillRect(rw * .22, 5, rw * .56, 3);
-  cx.fillStyle = col.faint; cx.font = "600 9px ui-sans-serif, system-ui, sans-serif"; cx.textAlign = "center"; cx.textBaseline = "top";
-  cx.fillText("SCREEN", rw * .5, 12);
+  setCamera();
+  const w = ROOM.w, d = ROOM.d, h = ROOM.h;
+  const A = [[-w, 0, 0], [w, 0, 0], [w, d, 0], [-w, d, 0], [-w, 0, h], [w, 0, h], [w, d, h], [-w, d, h]].map(p => ({ x: p[0], y: p[1], z: p[2] }));
+  const quad = (i, j, k, l) => { const q = [i, j, k, l].map(t => proj(A[t].x, A[t].y, A[t].z)); cx.beginPath(); cx.moveTo(q[0].x, q[0].y); for (let t = 1; t < 4; t++) cx.lineTo(q[t].x, q[t].y); cx.closePath(); };
+  // floor, with a grid
+  cx.fillStyle = rgba(col.ink, light ? .05 : .04); quad(0, 1, 2, 3); cx.fill();
+  cx.strokeStyle = rgba(col.ink, .05); cx.lineWidth = 1;
+  for (let i = 1; i < 10; i++) seg3({ x: -w + 2 * w * i / 10, y: 0, z: 0 }, { x: -w + 2 * w * i / 10, y: d, z: 0 });
+  for (let i = 1; i < 8; i++) seg3({ x: -w, y: d * i / 8, z: 0 }, { x: w, y: d * i / 8, z: 0 });
+  // the screen wall (far end), with the screen on it
+  cx.fillStyle = rgba(col.ink, light ? .035 : .03); quad(3, 2, 6, 7); cx.fill();
+  const sc = [[-.52, .2], [.52, .2], [.52, .56], [-.52, .56]].map(p => proj(p[0], d, p[1]));
+  cx.beginPath(); cx.moveTo(sc[0].x, sc[0].y); for (let t = 1; t < 4; t++) cx.lineTo(sc[t].x, sc[t].y); cx.closePath();
+  cx.fillStyle = rgba(col.ink, light ? .07 : .06); cx.fill(); cx.strokeStyle = rgba(col.ink, .4); cx.lineWidth = 1.2; cx.stroke();
+  // room edges
+  cx.strokeStyle = rgba(col.ink, .16); cx.lineWidth = 1;
+  for (const [i, j] of [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]) seg3(A[i], A[j]);
+  if (view.pitch > .9) { cx.fillStyle = col.faint; cx.font = "600 9px ui-sans-serif, system-ui, sans-serif"; cx.textAlign = "center"; cx.textBaseline = "bottom"; const t = proj(0, d, 0); cx.fillText("SCREEN", t.x, t.y - 4); }
+  else { const t = proj(0, d, .6); cx.fillStyle = col.faint; cx.font = "600 9px ui-sans-serif, system-ui, sans-serif"; cx.textAlign = "center"; cx.textBaseline = "bottom"; cx.fillText("SCREEN", t.x, t.y - 4); }
 
-  const sp = {}; for (const n of NAMES) sp[n] = { x: SPK[n].x * rw, y: SPK[n].y * rh };
-  const me = { x: LISTENER.x * rw, y: LISTENER.y * rh };
-  const e = {}; for (const n of NAMES) e[n] = Math.pow(norm(lv[n].db), 1.25);
+  const pos = {}, e = {}; for (const n of NAMES) { pos[n] = world(n); e[n] = Math.pow(norm(lv[n].db), 1.25); }
+  const ear = proj(EAR.x, EAR.y, EAR.z);
   cx.globalCompositeOperation = light ? "source-over" : "lighter";
-  // sound field: soft light around each speaker, in proportion to its level
+  // sound field: soft light on the floor under each speaker, in proportion to its level
   for (const n of NAMES) {
-    const rgb = col[SPK[n].kind], r = rw * (.07 + .3 * e[n]), q = sp[n];
     if (e[n] < .01) continue;
-    const g = cx.createRadialGradient(q.x, q.y, 0, q.x, q.y, r);
-    g.addColorStop(0, rgba(rgb, (light ? .5 : .62) * e[n])); g.addColorStop(.45, rgba(rgb, (light ? .18 : .22) * e[n])); g.addColorStop(1, rgba(rgb, 0));
-    cx.fillStyle = g; cx.beginPath(); cx.arc(q.x, q.y, r, 0, 7); cx.fill();
+    const rgb = col[SPK[n].kind], P0 = pos[n], rr = .16 + .62 * e[n];
+    const c0 = proj(P0.x, P0.y, 0), ex = Math.abs(proj(P0.x + rr, P0.y, 0).x - proj(P0.x - rr, P0.y, 0).x) / 2;
+    const ey = Math.abs(proj(P0.x, P0.y + rr, 0).y - proj(P0.x, P0.y - rr, 0).y) / 2;
+    if (!(ex > 1) || !(ey > .5)) continue;
+    cx.save(); cx.translate(c0.x, c0.y); cx.scale(1, ey / ex);
+    const g = cx.createRadialGradient(0, 0, 0, 0, 0, ex);
+    g.addColorStop(0, rgba(rgb, (light ? .5 : .6) * e[n])); g.addColorStop(.45, rgba(rgb, (light ? .18 : .22) * e[n])); g.addColorStop(1, rgba(rgb, 0));
+    cx.fillStyle = g; cx.beginPath(); cx.arc(0, 0, ex, 0, 7); cx.fill(); cx.restore();
   }
-  // beams from the listening position
+  // beams from the listener's head to each speaker
   for (const n of NAMES) {
     if (SPK[n].kind === "lfe") continue;
-    const rgb = col[SPK[n].kind], q = sp[n], g = cx.createLinearGradient(me.x, me.y, q.x, q.y);
+    const rgb = col[SPK[n].kind], q = proj(pos[n].x, pos[n].y, pos[n].z), g = cx.createLinearGradient(ear.x, ear.y, q.x, q.y);
     g.addColorStop(0, rgba(rgb, 0)); g.addColorStop(1, rgba(rgb, .08 + .6 * e[n]));
-    cx.strokeStyle = g; cx.lineWidth = .8 + 3.2 * e[n]; cx.lineCap = "round"; cx.beginPath(); cx.moveTo(me.x, me.y); cx.lineTo(q.x, q.y); cx.stroke();
+    cx.strokeStyle = g; cx.lineWidth = .8 + 3.2 * e[n]; cx.lineCap = "round"; cx.beginPath(); cx.moveTo(ear.x, ear.y); cx.lineTo(q.x, q.y); cx.stroke();
   }
   cx.globalCompositeOperation = "source-over";
 
-  // centre of energy of the bed and the heights (the sub has no direction)
-  let tw = 0, fx = 0, fy = 0;
-  for (const n of NAMES) { if (SPK[n].kind === "lfe") continue; const w = Math.pow(10, lv[n].db / 10); tw += w; fx += w * sp[n].x; fy += w * sp[n].y; }
+  // centre of energy of the bed and the heights, in the room (the sub has no direction)
+  let tw = 0, fx = 0, fy = 0, fz = 0;
+  for (const n of NAMES) { if (SPK[n].kind === "lfe") continue; const wt = Math.pow(10, lv[n].db / 10); tw += wt; fx += wt * SPK[n].x; fy += wt * SPK[n].y; fz += wt * pos[n].z; }
   const loud = Math.max(...NAMES.filter(n => SPK[n].kind !== "lfe").map(n => lv[n].db));
-  const target = tw > 0 && loud > -50 ? { x: fx / tw / rw, y: fy / tw / rh, a: 1 } : { x: LISTENER.x, y: LISTENER.y, a: 0 };
-  focus.x += (target.x - focus.x) * .18; focus.y += (target.y - focus.y) * .18; focus.a += (target.a - focus.a) * .12;
-  if (!reduce && focus.a > .3) { trail.push({ x: focus.x, y: focus.y }); if (trail.length > 40) trail.shift(); } else if (trail.length) trail.shift();
-  for (let i = 0; i < trail.length; i++) { const t = trail[i], k = i / trail.length; cx.fillStyle = rgba(col.ink, .22 * k * focus.a); cx.beginPath(); cx.arc(t.x * rw, t.y * rh, 1 + 2.2 * k, 0, 7); cx.fill(); }
+  const target = tw > 0 && loud > -50 ? { x: fx / tw, y: fy / tw, z: fz / tw, a: 1 } : { x: LISTENER.x, y: LISTENER.y, z: ZK.bed, a: 0 };
+  focus.x += (target.x - focus.x) * .18; focus.y += (target.y - focus.y) * .18; focus.z += (target.z - focus.z) * .18; focus.a += (target.a - focus.a) * .12;
+  const fw = { x: (focus.x - .5) * 2 * w, y: (1 - focus.y) * d, z: focus.z };
+  if (!reduce && focus.a > .3) { trail.push(fw); if (trail.length > 40) trail.shift(); } else if (trail.length) trail.shift();
+  for (let i = 0; i < trail.length; i++) { const t = proj(trail[i].x, trail[i].y, trail[i].z), k = i / trail.length; cx.fillStyle = rgba(col.ink, .22 * k * focus.a); cx.beginPath(); cx.arc(t.x, t.y, 1 + 2.2 * k, 0, 7); cx.fill(); }
 
-  // listener
-  cx.fillStyle = rgba(col.ink, .5); cx.beginPath(); cx.arc(me.x, me.y - 4, 5, 0, 7); cx.fill();
-  cx.beginPath(); cx.ellipse(me.x, me.y + 8, 11, 6, 0, Math.PI, 0); cx.fill();
-
-  // speakers
-  cx.textAlign = "center";
+  // things with a position in depth, drawn far to near: the listener, the speakers, the focus marker
+  const items = [];
+  items.push({ d: proj(EAR.x, EAR.y, EAR.z).d, draw() {
+    const head = proj(EAR.x, EAR.y, EAR.z), foot = proj(EAR.x, EAR.y, 0), r = Math.max(4, .045 * head.s);
+    cx.strokeStyle = rgba(col.ink, .18); cx.lineWidth = 1; cx.beginPath(); cx.moveTo(head.x, head.y); cx.lineTo(foot.x, foot.y); cx.stroke();
+    cx.fillStyle = rgba(col.ink, .09); cx.beginPath(); cx.ellipse(foot.x, foot.y, r * 2.2, r * 2.2 * Math.max(.25, Math.sin(Math.max(.25, view.pitch))), 0, 0, 7); cx.fill();
+    cx.fillStyle = rgba(col.ink, .55); cx.beginPath(); cx.arc(head.x, head.y, r, 0, 7); cx.fill();
+    cx.beginPath(); cx.ellipse(head.x, head.y + r * 2.1, r * 1.9, r * 1.1, 0, Math.PI, 0); cx.fill();
+  } });
   for (const n of NAMES) {
-    const s = SPK[n], q = sp[n], rgb = col[s.kind], k = e[n], pk = norm(lv[n].hold), clip = lv[n].hold > -1;
-    const r0 = 9 + 5 * k;
-    if (pk > .02) { cx.strokeStyle = clip ? col.bad : rgba(rgb, .55); cx.lineWidth = 1.2; cx.beginPath(); cx.arc(q.x, q.y, r0 + 3 + 14 * pk, 0, 7); cx.stroke(); }
-    cx.fillStyle = rgba(rgb, .12 + .88 * k); cx.strokeStyle = rgba(rgb, .35 + .65 * k); cx.lineWidth = 1.5;
-    if (s.kind === "height") cx.setLineDash([3, 3]);
-    cx.beginPath();
-    if (s.kind === "lfe") cx.roundRect(q.x - r0, q.y - r0, r0 * 2, r0 * 2, 5); else cx.arc(q.x, q.y, r0, 0, 7);
-    cx.fill(); cx.stroke(); cx.setLineDash([]);
-    if (s.kind === "height") { cx.fillStyle = rgba(rgb, .9); cx.beginPath(); cx.moveTo(q.x, q.y - 3.5); cx.lineTo(q.x + 3.2, q.y + 2); cx.lineTo(q.x - 3.2, q.y + 2); cx.closePath(); cx.fill(); }
-    cx.fillStyle = col.muted; cx.font = "600 10px ui-sans-serif, system-ui, sans-serif"; cx.textBaseline = "top";
-    const ly = q.y + r0 + 18 * pk + 7; cx.fillText(n, q.x, ly);
-    cx.fillStyle = k > .03 ? col.text : col.faint; cx.font = "11px ui-sans-serif, system-ui, sans-serif"; cx.fillText(dbText(lv[n].db), q.x, ly + 12);
+    const q = proj(pos[n].x, pos[n].y, pos[n].z);
+    items.push({ d: q.d, draw() {
+      const s = SPK[n], rgb = col[s.kind], k = e[n], pk = norm(lv[n].hold), clip = lv[n].hold > -1;
+      const base = proj(pos[n].x, pos[n].y, s.kind === "height" ? ROOM.h : 0), foot = proj(pos[n].x, pos[n].y, 0);
+      const r0 = Math.max(6, (.058 + .026 * k) * q.s);
+      // drop line to the floor (or the ceiling mount) and a small shadow
+      cx.strokeStyle = rgba(rgb, .22); cx.lineWidth = 1; cx.setLineDash([2, 3]); cx.beginPath(); cx.moveTo(q.x, q.y); cx.lineTo(foot.x, foot.y); cx.stroke(); cx.setLineDash([]);
+      if (s.kind === "height") { cx.strokeStyle = rgba(rgb, .5); cx.beginPath(); cx.moveTo(q.x, q.y); cx.lineTo(base.x, base.y); cx.stroke(); }
+      cx.fillStyle = rgba(rgb, .16); cx.beginPath(); cx.ellipse(foot.x, foot.y, r0 * .9, r0 * .9 * Math.max(.25, Math.sin(Math.max(.25, view.pitch))), 0, 0, 7); cx.fill();
+      if (pk > .02) { cx.strokeStyle = clip ? col.bad : rgba(rgb, .55); cx.lineWidth = 1.2; cx.beginPath(); cx.arc(q.x, q.y, r0 + 3 + 14 * pk, 0, 7); cx.stroke(); }
+      // a lit sphere: a body that brightens with the level
+      const g = cx.createRadialGradient(q.x - r0 * .35, q.y - r0 * .4, r0 * .1, q.x, q.y, r0);
+      g.addColorStop(0, rgba(rgb, .35 + .65 * k)); g.addColorStop(1, rgba(rgb, .08 + .62 * k));
+      cx.fillStyle = g; cx.strokeStyle = rgba(rgb, .35 + .65 * k); cx.lineWidth = 1.5;
+      if (s.kind === "height") cx.setLineDash([3, 3]);
+      cx.beginPath();
+      if (s.kind === "lfe") cx.roundRect(q.x - r0, q.y - r0, r0 * 2, r0 * 2, 5); else cx.arc(q.x, q.y, r0, 0, 7);
+      cx.fill(); cx.stroke(); cx.setLineDash([]);
+      if (s.kind === "height") { cx.fillStyle = rgba(rgb, .9); cx.beginPath(); cx.moveTo(q.x, q.y - 3.5); cx.lineTo(q.x + 3.2, q.y + 2); cx.lineTo(q.x - 3.2, q.y + 2); cx.closePath(); cx.fill(); }
+      cx.textAlign = "center"; cx.textBaseline = "top"; cx.fillStyle = col.muted; cx.font = "600 10px ui-sans-serif, system-ui, sans-serif";
+      const ly = q.y + r0 + 18 * pk + 6; cx.fillText(n, q.x, ly);
+      cx.fillStyle = k > .03 ? col.text : col.faint; cx.font = "11px ui-sans-serif, system-ui, sans-serif"; cx.fillText(dbText(lv[n].db), q.x, ly + 12);
+    } });
   }
+  items.sort((a, b) => b.d - a.d);
+  for (const it of items) it.draw();
   // focus marker on top
   if (focus.a > .02) {
-    const fxp = focus.x * rw, fyp = focus.y * rh;
-    cx.strokeStyle = rgba(col.ink, .9 * focus.a); cx.lineWidth = 1.5; cx.beginPath(); cx.arc(fxp, fyp, 7, 0, 7); cx.stroke();
-    cx.fillStyle = rgba(col.ink, .9 * focus.a); cx.beginPath(); cx.arc(fxp, fyp, 2, 0, 7); cx.fill();
+    const fp = proj(fw.x, fw.y, fw.z), ff = proj(fw.x, fw.y, 0);
+    cx.strokeStyle = rgba(col.ink, .25 * focus.a); cx.lineWidth = 1; cx.beginPath(); cx.moveTo(fp.x, fp.y); cx.lineTo(ff.x, ff.y); cx.stroke();
+    cx.strokeStyle = rgba(col.ink, .9 * focus.a); cx.lineWidth = 1.5; cx.beginPath(); cx.arc(fp.x, fp.y, 7, 0, 7); cx.stroke();
+    cx.fillStyle = rgba(col.ink, .9 * focus.a); cx.beginPath(); cx.arc(fp.x, fp.y, 2, 0, 7); cx.fill();
   }
-  if (loud <= -70) { cx.fillStyle = col.faint; cx.font = "12px ui-sans-serif, system-ui, sans-serif"; cx.textBaseline = "middle"; cx.fillText(lastMsg ? "Silence" : "No signal data", rw * .5, rh * .36); }
-  cx.restore();
+  if (loud <= -70) { cx.fillStyle = col.faint; cx.font = "12px ui-sans-serif, system-ui, sans-serif"; cx.textAlign = "center"; cx.textBaseline = "middle"; cx.fillText(lastMsg ? "Silence" : "No signal data", W * .5, H - 14); }
 }
+
+/* view: drag to turn the room, double-click or the buttons to jump to a view */
+function setView(name) { const v = VIEWS[name]; goal.yaw = v.yaw; goal.pitch = v.pitch; if (reduce) { view.yaw = goal.yaw; view.pitch = goal.pitch; } markViews(name); }
+function markViews(name) { for (const b of document.querySelectorAll("#views button")) b.setAttribute("aria-pressed", String(b.dataset.view === name)); }
+function stepView() {
+  if (reduce) return;
+  const k = .16;
+  view.yaw += (goal.yaw - view.yaw) * k; view.pitch += (goal.pitch - view.pitch) * k;
+  if (Math.abs(goal.yaw - view.yaw) < .0005) view.yaw = goal.yaw;
+  if (Math.abs(goal.pitch - view.pitch) < .0005) view.pitch = goal.pitch;
+}
+for (const b of document.querySelectorAll("#views button")) b.addEventListener("click", () => setView(b.dataset.view));
+markViews("3d");
+let drag = null;
+cv.addEventListener("pointerdown", e => { drag = { x: e.clientX, y: e.clientY, touch: e.pointerType === "touch" }; cv.setPointerCapture(e.pointerId); cv.style.cursor = "grabbing"; });
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
+  goal.yaw -= dx * .008; if (!drag.touch) goal.pitch = Math.max(.05, Math.min(1.55, goal.pitch + dy * .006));
+  view.yaw = goal.yaw; view.pitch = goal.pitch; markViews("");
+});
+const endDrag = () => { drag = null; cv.style.cursor = "grab"; };
+cv.addEventListener("pointerup", endDrag); cv.addEventListener("pointercancel", endDrag);
+cv.addEventListener("dblclick", () => setView("3d"));
 
 let prev = 0, acc = 0, statAcc = 0;
 function frame(now) {
@@ -446,7 +528,7 @@ function frame(now) {
     document.getElementById("st-height").textContent = loud && lv[loud].db > -70 && tot > 0 ? Math.round(100 * hs / tot) + " %" : "–";
     document.getElementById("st-lfe").textContent = SUBN && lv[SUBN] && lv[SUBN].db > -70 ? dbText(lv[SUBN].db) + " dB" : "–";
   }
-  if (W) drawRoom(now);
+  if (W) { stepView(); drawRoom(now); }
   requestAnimationFrame(frame);
 }
 resize(); requestAnimationFrame(frame);
