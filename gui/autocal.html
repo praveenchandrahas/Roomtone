@@ -22,6 +22,15 @@
     --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(30,30,50,.35);
   }
 }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] {
+    --bg: #f2f0eb; --bg-glow: rgba(217, 119, 6, .08); --panel: rgba(255, 255, 255, .72); --panel-solid: #ffffff; --line: rgba(20, 24, 32, .1);
+    --line-strong: rgba(20, 24, 32, .22); --text: #161b24; --muted: #5b6577; --faint: #98a1b1;
+    --accent: #c2670a; --accent-ink: #ffffff; --ok: #15803d; --warn: #a16207; --bad: #be123c;
+    --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(30,30,50,.35);
+}
+button.pill { font: inherit; font-size: 12px; cursor: pointer; background: transparent; } button.pill:hover { color: var(--text); border-color: var(--line-strong); }
 * { box-sizing: border-box; }
 html { background: var(--bg); }
 body { margin: 0; color: var(--text); min-height: 100vh; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
@@ -100,6 +109,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 button.b.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
 footer { margin-top: 18px; text-align: center; }
 </style>
+<script>try { const t = localStorage.getItem("theater-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
 </head>
 <body>
 <main>
@@ -107,6 +117,7 @@ footer { margin-top: 18px; text-align: center; }
     <div class="brand"><h1>Theatre <span>control</span></h1><small>Autocal</small></div>
     <span id="state-pill"></span>
     <a class="pill" href="/">Control</a>
+    <button type="button" class="pill" id="theme" title="Colour theme: Auto follows this computer; click to cycle Auto, Light, Dark"></button>
   </header>
   <div class="layout">
     <div class="stack">
@@ -337,6 +348,20 @@ async function tick() {
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
 tick();
+</script>
+<script>
+/* theme: Auto (follow the computer) -> Light -> Dark; the choice is shared with the control page, in this browser only */
+(() => {
+  const root = document.documentElement, btn = document.getElementById("theme");
+  const show = () => { const t = root.dataset.theme; btn.textContent = "Theme: " + (t === "light" ? "Light" : t === "dark" ? "Dark" : "Auto"); };
+  btn.addEventListener("click", () => {
+    const t = root.dataset.theme, next = t === "light" ? "dark" : t === "dark" ? null : "light";
+    if (next) root.dataset.theme = next; else delete root.dataset.theme;
+    try { next ? localStorage.setItem("theater-theme", next) : localStorage.removeItem("theater-theme"); } catch (e) {}
+    show();
+  });
+  show();
+})();
 </script>
 </body>
 </html>
