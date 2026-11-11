@@ -36,6 +36,8 @@ A **FAIL** verdict can still be applied with `autocal apply --force` (or the pag
 
 Roomtone does not apply room corrections through the router — that's `autocal`'s job (above), and only with your sign-off. What `gui/` and `overlay/` give you is **theatre control**: a live view of what the rig is doing, and switches for it, that talk to `linux-theater-dsp`'s router (`eq` / `theater-route`) and to `autocal`. Neither page ever applies a correction by itself.
 
+The page follows your computer's light or dark setting; the **Theme** button in the header cycles Auto, Light and Dark and remembers the choice in that browser.
+
 `gui/install-ctld.sh` installs `theater-ctld` as a user service on `127.0.0.1:8765` (needs the router's `eq status --json` from `linux-theater-dsp` first; `remove` undoes it).
 
 ### Control page (`/`)

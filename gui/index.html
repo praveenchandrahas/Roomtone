@@ -24,6 +24,15 @@
     --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(30,30,50,.35);
   }
 }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] {
+    --bg: #f2f0eb; --bg-glow: rgba(217, 119, 6, .08); --panel: rgba(255, 255, 255, .72); --panel-solid: #ffffff; --line: rgba(20, 24, 32, .1);
+    --line-strong: rgba(20, 24, 32, .22); --text: #161b24; --muted: #5b6577; --faint: #98a1b1;
+    --accent: #c2670a; --accent-ink: #ffffff; --ok: #15803d; --warn: #a16207; --bad: #be123c;
+    --bed-rgb: 217, 119, 6; --height-rgb: 2, 132, 199; --lfe-rgb: 219, 39, 119;
+    --shadow: 0 1px 0 rgba(255,255,255,.7) inset, 0 14px 30px -22px rgba(30,30,50,.35);
+}
 * { box-sizing: border-box; }
 html { background: var(--bg); }
 body {
@@ -43,6 +52,7 @@ header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-
 .pills { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border-radius: 999px; font-size: 12px; color: var(--muted);
   border: 1px solid var(--line); background: var(--panel); white-space: nowrap; }
+button.pill { font: inherit; font-size: 12px; cursor: pointer; background: transparent; } button.pill:hover { color: var(--text); border-color: var(--line-strong); }
 a.pill { text-decoration: none; } a.pill:hover { color: var(--text); border-color: var(--line-strong); }
 .pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
 .pill.ok { color: var(--text); } .pill.ok i { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
@@ -116,6 +126,7 @@ dialog button.go { background: var(--accent); border-color: var(--accent); color
 footer { margin-top: 18px; text-align: center; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 </style>
+<script>try { const t = localStorage.getItem("theater-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
 </head>
 <body>
 <main>
@@ -123,6 +134,7 @@ footer { margin-top: 18px; text-align: center; }
     <div class="brand"><h1>Theatre <span>control</span></h1><small>5.1.2 · Z906</small></div>
     <div class="pills" id="pills" aria-label="Status"></div>
     <a class="pill" href="/autocal">Autocal</a>
+    <button type="button" class="pill" id="theme" title="Colour theme: Auto follows this computer; click to cycle Auto, Light, Dark"></button>
     <span id="age"></span>
   </header>
 
@@ -331,7 +343,8 @@ const cv = document.getElementById("room"), cx = cv.getContext("2d");
 let W = 0, H = 0, dpr = 1, col = {}, light = false;
 function readColours() {
   const cs = getComputedStyle(document.documentElement);
-  light = matchMedia("(prefers-color-scheme: light)").matches && document.documentElement.dataset.theme !== "dark";
+  const forced = document.documentElement.dataset.theme;
+  light = forced === "light" || (forced !== "dark" && matchMedia("(prefers-color-scheme: light)").matches);
   col = { bed: cs.getPropertyValue("--bed-rgb").trim(), height: cs.getPropertyValue("--height-rgb").trim(), lfe: cs.getPropertyValue("--lfe-rgb").trim(),
     text: cs.getPropertyValue("--text").trim(), muted: cs.getPropertyValue("--muted").trim(), faint: cs.getPropertyValue("--faint").trim(), bad: cs.getPropertyValue("--bad").trim(), ink: light ? "20,24,32" : "255,255,255" };
 }
@@ -341,6 +354,16 @@ function resize() {
 }
 new ResizeObserver(resize).observe(cv);
 matchMedia("(prefers-color-scheme: light)").addEventListener("change", resize);
+/* theme: Auto (follow the computer) -> Light -> Dark, remembered in this browser only */
+const themeBtn = document.getElementById("theme");
+function showTheme() { const t = document.documentElement.dataset.theme; themeBtn.textContent = "Theme: " + (t === "light" ? "Light" : t === "dark" ? "Dark" : "Auto"); }
+themeBtn.addEventListener("click", () => {
+  const t = document.documentElement.dataset.theme, next = t === "light" ? "dark" : t === "dark" ? null : "light";
+  if (next) document.documentElement.dataset.theme = next; else delete document.documentElement.dataset.theme;
+  try { next ? localStorage.setItem("theater-theme", next) : localStorage.removeItem("theater-theme"); } catch (e) {}
+  showTheme(); readColours();
+});
+showTheme();
 const P = o => ({ x: o.x * W, y: o.y * H });
 const rgba = (rgb, a) => `rgba(${rgb},${Math.max(0, Math.min(1, a)).toFixed(3)})`;
 
