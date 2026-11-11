@@ -365,7 +365,7 @@ function setCamera() {
   const rl = Math.hypot(f.y, f.x), r = { x: f.y / rl, y: -f.x / rl, z: 0 };   // right = forward x up
   const u = { x: r.y * f.z - r.z * f.y, y: r.z * f.x - r.x * f.z, z: r.x * f.y - r.y * f.x };
   cam = { c, f, r, u };
-  FOCAL = Math.min(H * 1.08, W * .62) / Math.tan(.31);
+  FOCAL = Math.min(H * .98, W * .58) / Math.tan(.31);
 }
 function proj(x, y, z) {
   const v = { x: x - cam.c.x, y: y - cam.c.y, z: z - cam.c.z };
